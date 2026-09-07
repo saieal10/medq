@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { supabase } from './lib/supabase'
+
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Practice from './pages/Practice'
+import Library from './pages/Library'
 
 function ProtectedRoute({ session, children }) {
   if (!session) {
@@ -19,23 +21,19 @@ export default function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setLoading(false)
     })
 
     const { data: listener } =
-      supabase.auth.onAuthStateChange(
-        (_event, newSession) => {
-          setSession(newSession)
-        }
-      )
+      supabase.auth.onAuthStateChange((_event, newSession) => {
+        setSession(newSession)
+      })
 
     return () => {
       listener.subscription.unsubscribe()
     }
-
   }, [])
 
   if (loading) {
@@ -51,9 +49,7 @@ export default function App() {
 
       <Route
         path="/"
-        element={
-          <Landing session={session} />
-        }
+        element={<Landing session={session} />}
       />
 
       <Route
@@ -84,10 +80,17 @@ export default function App() {
       />
 
       <Route
-        path="*"
+        path="/library"
         element={
-          <Navigate to="/" replace />
+          <ProtectedRoute session={session}>
+            <Library session={session} />
+          </ProtectedRoute>
         }
+      />
+
+      <Route
+        path="*"
+        element={<Navigate to="/" replace />}
       />
 
     </Routes>
