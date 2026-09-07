@@ -4,9 +4,13 @@ import { supabase } from './lib/supabase'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
+import Practice from './pages/Practice'
 
 function ProtectedRoute({ session, children }) {
-  if (!session) return <Navigate to="/login" replace />
+  if (!session) {
+    return <Navigate to="/login" replace />
+  }
+
   return children
 }
 
@@ -15,26 +19,52 @@ export default function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setLoading(false)
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession)
-    })
+    const { data: listener } =
+      supabase.auth.onAuthStateChange(
+        (_event, newSession) => {
+          setSession(newSession)
+        }
+      )
 
-    return () => listener.subscription.unsubscribe()
+    return () => {
+      listener.subscription.unsubscribe()
+    }
+
   }, [])
 
   if (loading) {
-    return <div className="page-center"><div className="loader" /></div>
+    return (
+      <div className="page-center">
+        <div className="loader" />
+      </div>
+    )
   }
 
   return (
     <Routes>
-      <Route path="/" element={<Landing session={session} />} />
-      <Route path="/login" element={session ? <Navigate to="/dashboard" replace /> : <Login />} />
+
+      <Route
+        path="/"
+        element={
+          <Landing session={session} />
+        }
+      />
+
+      <Route
+        path="/login"
+        element={
+          session
+            ? <Navigate to="/dashboard" replace />
+            : <Login />
+        }
+      />
+
       <Route
         path="/dashboard"
         element={
@@ -43,7 +73,23 @@ export default function App() {
           </ProtectedRoute>
         }
       />
-      <Route path="*" element={<Navigate to="/" replace />} />
+
+      <Route
+        path="/practice"
+        element={
+          <ProtectedRoute session={session}>
+            <Practice session={session} />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="*"
+        element={
+          <Navigate to="/" replace />
+        }
+      />
+
     </Routes>
   )
 }
