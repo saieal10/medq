@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BookOpen, Brain, LogOut, RotateCcw, Target } from 'lucide-react'
+import {
+  BookOpen,
+  Brain,
+  LogOut,
+  RotateCcw,
+  Target
+} from 'lucide-react'
+
 import { supabase } from '../lib/supabase'
 import Logo from '../components/Logo'
 
@@ -8,14 +15,22 @@ export default function Dashboard({ session }) {
   const navigate = useNavigate()
 
   const [profile, setProfile] = useState(null)
-  const [stats, setStats] = useState({ attempted: 0, correct: 0 })
+  const [stats, setStats] = useState({
+    attempted: 0,
+    correct: 0
+  })
+
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       const userId = session.user.id
 
-      const [{ data: profileData }, { data: attempts }] = await Promise.all([
+      const [
+        { data: profileData },
+        { data: attempts },
+        { data: books }
+      ] = await Promise.all([
         supabase
           .from('profiles')
           .select('*')
@@ -25,17 +40,27 @@ export default function Dashboard({ session }) {
         supabase
           .from('attempts')
           .select('is_correct')
-          .eq('user_id', userId)
+          .eq('user_id', userId),
+
+        supabase
+          .from('books')
+          .select('id')
       ])
 
       setProfile(profileData)
 
-      const attempted = attempts?.length || 0
-      const correct = attempts?.filter((a) => a.is_correct).length || 0
+      const attempted =
+        attempts?.length || 0
+
+      const correct =
+        attempts?.filter(
+          (attempt) => attempt.is_correct
+        ).length || 0
 
       setStats({
         attempted,
-        correct
+        correct,
+        books: books?.length || 0
       })
 
       setLoading(false)
@@ -45,8 +70,13 @@ export default function Dashboard({ session }) {
   }, [session])
 
   const accuracy = useMemo(() => {
-    if (!stats.attempted) return 0
-    return Math.round((stats.correct / stats.attempted) * 100)
+    if (!stats.attempted) {
+      return 0
+    }
+
+    return Math.round(
+      (stats.correct / stats.attempted) * 100
+    )
   }, [stats])
 
   const firstName =
@@ -62,6 +92,7 @@ export default function Dashboard({ session }) {
     <div className="app-shell">
 
       <aside className="sidebar">
+
         <Logo />
 
         <div className="side-nav">
@@ -71,7 +102,9 @@ export default function Dashboard({ session }) {
             Dashboard
           </button>
 
-          <button onClick={() => navigate('/practice')}>
+          <button
+            onClick={() => navigate('/practice')}
+          >
             <Brain size={18} />
             Practice
           </button>
@@ -79,18 +112,24 @@ export default function Dashboard({ session }) {
           <button>
             <RotateCcw size={18} />
             Mistakes
-            <span className="soon">soon</span>
+            <span className="soon">
+              soon
+            </span>
           </button>
 
-          <button>
+          <button
+            onClick={() => navigate('/library')}
+          >
             <BookOpen size={18} />
             Library
-            <span className="soon">next</span>
           </button>
 
         </div>
 
-        <button className="logout" onClick={signOut}>
+        <button
+          className="logout"
+          onClick={signOut}
+        >
           <LogOut size={18} />
           Sign out
         </button>
@@ -102,6 +141,7 @@ export default function Dashboard({ session }) {
         <header className="dash-head">
 
           <div>
+
             <div className="eyebrow">
               YOUR STUDY DASHBOARD
             </div>
@@ -113,6 +153,7 @@ export default function Dashboard({ session }) {
             <p>
               This dashboard belongs only to your account.
             </p>
+
           </div>
 
           <div className="user-chip">
@@ -151,14 +192,14 @@ export default function Dashboard({ session }) {
                 meta={
                   stats.attempted
                     ? 'Based on your attempts'
-                    : 'Start practicing soon'
+                    : 'Start practicing'
                 }
               />
 
               <Stat
                 label="Books ready"
-                value="0"
-                meta="Library comes next"
+                value={stats.books || 0}
+                meta="Shared MedQ library"
               />
 
             </section>
@@ -176,14 +217,16 @@ export default function Dashboard({ session }) {
                 </h2>
 
                 <p>
-                  Practice questions by subject, chapter and difficulty.
-                  Every answer will be saved to your personal account and
-                  your dashboard statistics will update automatically.
+                  Practice questions generated from your
+                  shared MedQ medical library. Every answer
+                  is stored separately for your account.
                 </p>
 
                 <button
                   className="btn btn-primary"
-                  onClick={() => navigate('/practice')}
+                  onClick={() =>
+                    navigate('/practice')
+                  }
                 >
                   Start Practice
                 </button>
@@ -193,29 +236,27 @@ export default function Dashboard({ session }) {
               <div className="panel">
 
                 <div className="panel-kicker">
-                  TODAY
+                  MEDICAL LIBRARY
                 </div>
 
                 <h2>
-                  Your daily progress.
+                  Shared PDF collection.
                 </h2>
 
                 <p>
-                  Your attempts and accuracy will appear here as you
-                  start answering questions.
+                  Both users use the same uploaded medical
+                  books while keeping their study progress
+                  separate.
                 </p>
 
-                <div className="empty-chart">
-
-                  <span>
-                    {stats.attempted}
-                  </span>
-
-                  <small>
-                    total questions attempted
-                  </small>
-
-                </div>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    navigate('/library')
+                  }
+                >
+                  Open Library
+                </button>
 
               </div>
 
@@ -232,7 +273,8 @@ export default function Dashboard({ session }) {
                   </div>
 
                   <h2>
-                    Your weak and strong subjects will appear here.
+                    Your weak and strong subjects will
+                    appear here.
                   </h2>
 
                 </div>
@@ -257,7 +299,11 @@ export default function Dashboard({ session }) {
                     </span>
 
                     <div className="bar muted">
-                      <i style={{ width: '0%' }} />
+                      <i
+                        style={{
+                          width: '0%'
+                        }}
+                      />
                     </div>
 
                     <b>
@@ -282,7 +328,12 @@ export default function Dashboard({ session }) {
   )
 }
 
-function Stat({ label, value, meta }) {
+
+function Stat({
+  label,
+  value,
+  meta
+}) {
   return (
     <div className="stat-card">
 
