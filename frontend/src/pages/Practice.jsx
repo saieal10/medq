@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
+
 import { useNavigate } from 'react-router-dom'
+
 import {
   ArrowLeft,
   BookOpen,
@@ -12,23 +18,57 @@ import {
   Target,
   XCircle
 } from 'lucide-react'
+
 import { supabase } from '../lib/supabase'
 import Logo from '../components/Logo'
 
 export default function Practice({ session }) {
   const navigate = useNavigate()
 
-  const [questions, setQuestions] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [
+    questions,
+    setQuestions
+  ] = useState([])
 
-  const [subject, setSubject] = useState('all')
-  const [difficulty, setDifficulty] = useState('all')
+  const [
+    loading,
+    setLoading
+  ] = useState(true)
 
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [selectedOption, setSelectedOption] = useState(null)
-  const [submitted, setSubmitted] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [
+    error,
+    setError
+  ] = useState('')
+
+  const [
+    subject,
+    setSubject
+  ] = useState('all')
+
+  const [
+    difficulty,
+    setDifficulty
+  ] = useState('all')
+
+  const [
+    currentIndex,
+    setCurrentIndex
+  ] = useState(0)
+
+  const [
+    selectedOption,
+    setSelectedOption
+  ] = useState(null)
+
+  const [
+    submitted,
+    setSubmitted
+  ] = useState(false)
+
+  const [
+    saving,
+    setSaving
+  ] = useState(false)
 
   useEffect(() => {
     loadQuestions()
@@ -38,16 +78,29 @@ export default function Practice({ session }) {
     setLoading(true)
     setError('')
 
-    const { data, error } = await supabase
+    const {
+      data,
+      error
+    } = await supabase
       .from('questions')
       .select('*')
-      .order('created_at', { ascending: true })
+      .order(
+        'created_at',
+        {
+          ascending: true
+        }
+      )
 
     if (error) {
-      setError(error.message)
+      setError(
+        error.message
+      )
+
       setQuestions([])
     } else {
-      setQuestions(data || [])
+      setQuestions(
+        data || []
+      )
     }
 
     setLoading(false)
@@ -57,52 +110,101 @@ export default function Practice({ session }) {
     return [
       ...new Set(
         questions
-          .map((q) => q.subject)
+          .map(
+            (question) =>
+              question.subject
+          )
           .filter(Boolean)
       )
     ].sort()
   }, [questions])
 
-  const filteredQuestions = useMemo(() => {
-    return questions.filter((q) => {
-      const subjectMatch =
-        subject === 'all' || q.subject === subject
+  const filteredQuestions =
+    useMemo(() => {
 
-      const difficultyMatch =
-        difficulty === 'all' || q.difficulty === difficulty
+      return questions.filter(
+        (question) => {
 
-      return subjectMatch && difficultyMatch
-    })
-  }, [questions, subject, difficulty])
+          const subjectMatch =
+            subject === 'all' ||
+            question.subject === subject
+
+          const difficultyMatch =
+            difficulty === 'all' ||
+            question.difficulty === difficulty
+
+          return (
+            subjectMatch &&
+            difficultyMatch
+          )
+        }
+      )
+
+    }, [
+      questions,
+      subject,
+      difficulty
+    ])
 
   useEffect(() => {
     setCurrentIndex(0)
     setSelectedOption(null)
     setSubmitted(false)
-  }, [subject, difficulty])
+  }, [
+    subject,
+    difficulty
+  ])
 
   const currentQuestion =
-    filteredQuestions[currentIndex] || null
+    filteredQuestions[
+      currentIndex
+    ] || null
 
-  const options = currentQuestion
-    ? [
-        ['A', currentQuestion.option_a],
-        ['B', currentQuestion.option_b],
-        ['C', currentQuestion.option_c],
-        ['D', currentQuestion.option_d],
-        ['E', currentQuestion.option_e]
-      ].filter(([, text]) => text)
-    : []
+  const options =
+    currentQuestion
+      ? [
+          [
+            'A',
+            currentQuestion.option_a
+          ],
+          [
+            'B',
+            currentQuestion.option_b
+          ],
+          [
+            'C',
+            currentQuestion.option_c
+          ],
+          [
+            'D',
+            currentQuestion.option_d
+          ],
+          [
+            'E',
+            currentQuestion.option_e
+          ]
+        ].filter(
+          ([, text]) => text
+        )
+      : []
 
   const correctOption =
-    currentQuestion?.correct_option?.toUpperCase()
+    currentQuestion
+      ?.correct_option
+      ?.toUpperCase()
 
   const isCorrect =
     submitted &&
     selectedOption === correctOption
 
   async function submitAnswer() {
-    if (!currentQuestion || !selectedOption || submitted) return
+    if (
+      !currentQuestion ||
+      !selectedOption ||
+      submitted
+    ) {
+      return
+    }
 
     setSaving(true)
     setError('')
@@ -110,18 +212,31 @@ export default function Practice({ session }) {
     const answerIsCorrect =
       selectedOption === correctOption
 
-    const { error } = await supabase
+    const {
+      error
+    } = await supabase
       .from('attempts')
       .insert({
-        user_id: session.user.id,
-        question_id: currentQuestion.id,
-        selected_option: selectedOption,
-        is_correct: answerIsCorrect
+        user_id:
+          session.user.id,
+
+        question_id:
+          currentQuestion.id,
+
+        selected_option:
+          selectedOption,
+
+        is_correct:
+          answerIsCorrect
       })
 
     if (error) {
-      setError(error.message)
+      setError(
+        error.message
+      )
+
       setSaving(false)
+
       return
     }
 
@@ -130,8 +245,14 @@ export default function Practice({ session }) {
   }
 
   function nextQuestion() {
-    if (currentIndex < filteredQuestions.length - 1) {
-      setCurrentIndex((index) => index + 1)
+    if (
+      currentIndex <
+      filteredQuestions.length - 1
+    ) {
+      setCurrentIndex(
+        (index) => index + 1
+      )
+
       setSelectedOption(null)
       setSubmitted(false)
       setError('')
@@ -140,7 +261,10 @@ export default function Practice({ session }) {
 
   function previousQuestion() {
     if (currentIndex > 0) {
-      setCurrentIndex((index) => index - 1)
+      setCurrentIndex(
+        (index) => index - 1
+      )
+
       setSelectedOption(null)
       setSubmitted(false)
       setError('')
@@ -155,11 +279,16 @@ export default function Practice({ session }) {
     <div className="app-shell">
 
       <aside className="sidebar">
+
         <Logo />
 
         <div className="side-nav">
 
-          <button onClick={() => navigate('/dashboard')}>
+          <button
+            onClick={() =>
+              navigate('/dashboard')
+            }
+          >
             <Target size={18} />
             Dashboard
           </button>
@@ -172,21 +301,31 @@ export default function Practice({ session }) {
           <button>
             <RotateCcw size={18} />
             Mistakes
-            <span className="soon">soon</span>
+
+            <span className="soon">
+              soon
+            </span>
           </button>
 
-          <button>
+          <button
+            onClick={() =>
+              navigate('/library')
+            }
+          >
             <BookOpen size={18} />
             Library
-            <span className="soon">next</span>
           </button>
 
         </div>
 
-        <button className="logout" onClick={signOut}>
+        <button
+          className="logout"
+          onClick={signOut}
+        >
           <LogOut size={18} />
           Sign out
         </button>
+
       </aside>
 
       <main className="dashboard-main">
@@ -194,6 +333,7 @@ export default function Practice({ session }) {
         <header className="dash-head">
 
           <div>
+
             <div className="eyebrow">
               MEDQ PRACTICE
             </div>
@@ -203,8 +343,10 @@ export default function Practice({ session }) {
             </h1>
 
             <p>
-              Every answer is saved to your personal account.
+              Every answer is saved to
+              your personal account.
             </p>
+
           </div>
 
           <div className="user-chip">
@@ -223,17 +365,30 @@ export default function Practice({ session }) {
 
             <select
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={
+                (event) =>
+                  setSubject(
+                    event.target.value
+                  )
+              }
             >
+
               <option value="all">
                 All subjects
               </option>
 
-              {subjects.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
+              {subjects.map(
+                (item) => (
+
+                  <option
+                    key={item}
+                    value={item}
+                  >
+                    {item}
+                  </option>
+
+                )
+              )}
 
             </select>
 
@@ -247,8 +402,14 @@ export default function Practice({ session }) {
 
             <select
               value={difficulty}
-              onChange={(e) => setDifficulty(e.target.value)}
+              onChange={
+                (event) =>
+                  setDifficulty(
+                    event.target.value
+                  )
+              }
             >
+
               <option value="all">
                 All difficulties
               </option>
@@ -270,6 +431,7 @@ export default function Practice({ session }) {
           </div>
 
           <div className="practice-count">
+
             <span>
               Questions
             </span>
@@ -277,6 +439,7 @@ export default function Practice({ session }) {
             <strong>
               {filteredQuestions.length}
             </strong>
+
           </div>
 
         </section>
@@ -290,6 +453,7 @@ export default function Practice({ session }) {
         ) : error ? (
 
           <div className="panel">
+
             <h2>
               Something went wrong
             </h2>
@@ -297,6 +461,7 @@ export default function Practice({ session }) {
             <p>
               {error}
             </p>
+
           </div>
 
         ) : filteredQuestions.length === 0 ? (
@@ -310,16 +475,21 @@ export default function Practice({ session }) {
             </h2>
 
             <p>
-              Your database is ready, but the questions table is still empty.
-              Once questions are added, they will appear here automatically.
+              Upload medical PDFs into
+              the shared MedQ Library.
+              Once automatic processing
+              creates questions, they will
+              appear here.
             </p>
 
             <button
               className="btn btn-primary"
-              onClick={() => navigate('/dashboard')}
+              onClick={() =>
+                navigate('/library')
+              }
             >
-              <Home size={18} />
-              Back to dashboard
+              <BookOpen size={18} />
+              Open Library
             </button>
 
           </section>
@@ -335,7 +505,9 @@ export default function Practice({ session }) {
                 <div>
 
                   <div className="panel-kicker">
-                    QUESTION {currentIndex + 1} OF {filteredQuestions.length}
+                    QUESTION {currentIndex + 1}
+                    {' '}OF{' '}
+                    {filteredQuestions.length}
                   </div>
 
                   <div className="question-tags">
@@ -352,6 +524,12 @@ export default function Practice({ session }) {
                       </span>
                     )}
 
+                    {currentQuestion.topic && (
+                      <span>
+                        {currentQuestion.topic}
+                      </span>
+                    )}
+
                     {currentQuestion.difficulty && (
                       <span>
                         {currentQuestion.difficulty}
@@ -363,9 +541,12 @@ export default function Practice({ session }) {
                 </div>
 
                 {currentQuestion.source_page && (
+
                   <div className="source-page">
-                    Page {currentQuestion.source_page}
+                    Page{' '}
+                    {currentQuestion.source_page}
                   </div>
+
                 )}
 
               </div>
@@ -376,55 +557,71 @@ export default function Practice({ session }) {
 
               <div className="option-list">
 
-                {options.map(([letter, text]) => {
+                {options.map(
+                  ([letter, text]) => {
 
-                  const selected =
-                    selectedOption === letter
+                    const selected =
+                      selectedOption === letter
 
-                  const correct =
-                    submitted &&
-                    letter === correctOption
+                    const correct =
+                      submitted &&
+                      letter === correctOption
 
-                  const wrong =
-                    submitted &&
-                    selected &&
-                    letter !== correctOption
+                    const wrong =
+                      submitted &&
+                      selected &&
+                      letter !== correctOption
 
-                  return (
-                    <button
-                      key={letter}
-                      className={[
-                        'option-button',
-                        selected ? 'selected' : '',
-                        correct ? 'correct' : '',
-                        wrong ? 'wrong' : ''
-                      ].join(' ')}
-                      onClick={() => {
-                        if (!submitted) {
-                          setSelectedOption(letter)
-                        }
-                      }}
-                    >
+                    return (
 
-                      <span className="option-letter">
-                        {letter}
-                      </span>
+                      <button
+                        key={letter}
+                        className={[
+                          'option-button',
+                          selected
+                            ? 'selected'
+                            : '',
+                          correct
+                            ? 'correct'
+                            : '',
+                          wrong
+                            ? 'wrong'
+                            : ''
+                        ].join(' ')}
+                        onClick={() => {
+                          if (!submitted) {
+                            setSelectedOption(
+                              letter
+                            )
+                          }
+                        }}
+                      >
 
-                      <span className="option-text">
-                        {text}
-                      </span>
+                        <span className="option-letter">
+                          {letter}
+                        </span>
 
-                      {correct && (
-                        <CheckCircle2 size={20} />
-                      )}
+                        <span className="option-text">
+                          {text}
+                        </span>
 
-                      {wrong && (
-                        <XCircle size={20} />
-                      )}
+                        {correct && (
+                          <CheckCircle2
+                            size={20}
+                          />
+                        )}
 
-                    </button>
-                  )
-                })}
+                        {wrong && (
+                          <XCircle
+                            size={20}
+                          />
+                        )}
+
+                      </button>
+
+                    )
+                  }
+                )}
 
               </div>
 
@@ -432,10 +629,19 @@ export default function Practice({ session }) {
 
                 <button
                   className="btn btn-primary submit-answer"
-                  disabled={!selectedOption || saving}
-                  onClick={submitAnswer}
+                  disabled={
+                    !selectedOption ||
+                    saving
+                  }
+                  onClick={
+                    submitAnswer
+                  }
                 >
-                  {saving ? 'Saving…' : 'Submit answer'}
+                  {
+                    saving
+                      ? 'Saving…'
+                      : 'Submit answer'
+                  }
                 </button>
 
               ) : (
@@ -452,33 +658,44 @@ export default function Practice({ session }) {
 
                     {isCorrect ? (
                       <>
-                        <CheckCircle2 size={22} />
+                        <CheckCircle2
+                          size={22}
+                        />
                         Correct
                       </>
                     ) : (
                       <>
-                        <XCircle size={22} />
-                        Incorrect — correct answer is {correctOption}
+                        <XCircle
+                          size={22}
+                        />
+                        Incorrect —
+                        correct answer is{' '}
+                        {correctOption}
                       </>
                     )}
 
                   </div>
 
-                  {currentQuestion.explanation && (
+                  {
+                    currentQuestion.explanation &&
+                    (
 
-                    <div className="explanation-box">
+                      <div className="explanation-box">
 
-                      <div className="panel-kicker">
-                        EXPLANATION
+                        <div className="panel-kicker">
+                          EXPLANATION
+                        </div>
+
+                        <p>
+                          {
+                            currentQuestion.explanation
+                          }
+                        </p>
+
                       </div>
 
-                      <p>
-                        {currentQuestion.explanation}
-                      </p>
-
-                    </div>
-
-                  )}
+                    )
+                  }
 
                 </div>
 
@@ -490,8 +707,12 @@ export default function Practice({ session }) {
 
               <button
                 className="btn"
-                disabled={currentIndex === 0}
-                onClick={previousQuestion}
+                disabled={
+                  currentIndex === 0
+                }
+                onClick={
+                  previousQuestion
+                }
               >
                 <ArrowLeft size={18} />
                 Previous
@@ -501,9 +722,12 @@ export default function Practice({ session }) {
                 className="btn btn-primary"
                 disabled={
                   !submitted ||
-                  currentIndex === filteredQuestions.length - 1
+                  currentIndex ===
+                    filteredQuestions.length - 1
                 }
-                onClick={nextQuestion}
+                onClick={
+                  nextQuestion
+                }
               >
                 Next question
                 <ChevronRight size={18} />
