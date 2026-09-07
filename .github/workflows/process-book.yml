@@ -1,0 +1,70 @@
+name: Process MedQ Book
+
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        description: "Supabase book ID"
+        required: true
+        type: string
+      file_key:
+        description: "Cloudflare R2 object key"
+        required: true
+        type: string
+      subject:
+        description: "Book subject"
+        required: false
+        default: "General"
+        type: string
+
+jobs:
+  process-book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            tesseract-ocr \
+            ghostscript \
+            qpdf
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            boto3 \
+            pymupdf \
+            requests \
+            supabase \
+            python-dotenv \
+            pillow \
+            pytesseract
+
+      - name: Process PDF and create MCQs
+        env:
+          BOOK_ID: ${{ github.event.inputs.book_id }}
+          FILE_KEY: ${{ github.event.inputs.file_key }}
+          BOOK_SUBJECT: ${{ github.event.inputs.subject }}
+
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+        run: |
+          python worker/process_book.py
