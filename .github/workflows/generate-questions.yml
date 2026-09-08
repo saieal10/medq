@@ -17,6 +17,16 @@ on:
         required: true
         default: "__ALL__"
         type: string
+      topic:
+        description: "Target curriculum topic or __ALL__"
+        required: true
+        default: "__ALL__"
+        type: string
+      subtopic:
+        description: "Target curriculum subtopic or __ALL__"
+        required: true
+        default: "__ALL__"
+        type: string
       difficulty:
         description: "all, easy, medium, or hard"
         required: true
@@ -71,6 +81,8 @@ jobs:
           BOOK_ID: ${{ inputs.book_id }}
           CHAPTER: ${{ inputs.chapter }}
           TARGET_SUBJECT: ${{ inputs.subject }}
+          TARGET_TOPIC: ${{ inputs.topic }}
+          TARGET_SUBTOPIC: ${{ inputs.subtopic }}
           TARGET_DIFFICULTY: ${{ inputs.difficulty }}
           EXAM_MODE: ${{ inputs.exam_mode }}
           QUESTION_COUNT: ${{ inputs.count }}
