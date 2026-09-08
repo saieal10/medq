@@ -20,7 +20,7 @@ load_dotenv()
 
 app = FastAPI(
     title="MedQ API",
-    version="0.6.0"
+    version="0.9.0"
 )
 
 
@@ -188,8 +188,10 @@ class MedBotRequest(BaseModel):
 
 
 class GenerateQuestionsRequest(BaseModel):
-    book_id: str
-    chapter: str
+    book_id: Optional[str] = None
+    chapter: str = "__AUTO__"
+    subject: str = "__ALL__"
+    difficulty: str = "all"
     exam_mode: str = "mixed"
     count: int = 20
 
@@ -702,7 +704,7 @@ def root():
     return {
         "name": "MedQ API",
         "status": "online",
-        "version": "0.8.0",
+        "version": "0.9.0",
         "features": [
             "r2-storage",
             "supabase-books",
@@ -719,7 +721,7 @@ def health():
     return {
         "ok": True,
         "service": "medq-api",
-        "version": "0.8.0"
+        "version": "0.9.0"
     }
 
 
@@ -742,60 +744,110 @@ def generate_questions_on_demand(
             detail="exam_mode must be amc, fmge, or mixed."
         )
 
-    if request.count not in {10, 20, 50}:
+    if request.count not in {10, 20, 50, 100}:
         raise HTTPException(
             status_code=400,
-            detail="count must be 10, 20, or 50."
+            detail="count must be 10, 20, 50, or 100."
         )
 
-    chapter = (request.chapter or "").strip()
+    chapter = (request.chapter or "__AUTO__").strip()
+    target_subject = (request.subject or "__ALL__").strip()
+    target_difficulty = (request.difficulty or "all").strip().lower()
     auto_mode = chapter == "__AUTO__"
+
     if not chapter or len(chapter) > 250:
-        raise HTTPException(
-            status_code=400,
-            detail="Choose a valid chapter."
-        )
+        raise HTTPException(status_code=400, detail="Invalid chapter.")
+    if not target_subject or len(target_subject) > 160:
+        raise HTTPException(status_code=400, detail="Invalid subject.")
+    if target_difficulty not in {"all", "easy", "medium", "hard"}:
+        raise HTTPException(status_code=400, detail="Invalid difficulty.")
 
     supabase = get_supabase()
 
+    # Autopilot chooses a processed library book as optional grounding.
+    # The AI is NOT blocked when that book does not cover the requested subject;
+    # the worker can supplement with general medical knowledge.
     try:
-        book_result = (
+        books_result = (
             supabase
             .table("books")
             .select("id,title,subject,status")
-            .eq("id", request.book_id)
-            .limit(1)
+            .order("created_at", desc=True)
             .execute()
         )
+        books = books_result.data or []
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to load book: {str(exc)}"
+            detail=f"Unable to load the MedQ library: {str(exc)}"
         )
 
-    if not book_result.data:
-        raise HTTPException(status_code=404, detail="Book not found.")
-
-    try:
-        chunk_query = (
-            supabase
-            .table("book_chunks")
-            .select("id")
-            .eq("book_id", request.book_id)
-        )
-        if not auto_mode:
-            chunk_query = chunk_query.eq("chapter", chapter)
-        chunk_result = chunk_query.limit(1).execute()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to validate chapter: {str(exc)}"
-        )
-
-    if not chunk_result.data:
+    if not books:
         raise HTTPException(
             status_code=404,
-            detail="No processed textbook chunks were found for this chapter."
+            detail="MedQ needs at least one processed library book as a generation anchor."
+        )
+
+    def subject_hint(value: str) -> str:
+        text = value.lower()
+        if "adult health" in text and "medicine" in text:
+            return "medicine"
+        if "adult health" in text and "surgery" in text:
+            return "surgery"
+        if "women" in text or "obstetric" in text or "gynaec" in text:
+            return "obstetrics"
+        if "child" in text or "paedi" in text or "pedi" in text:
+            return "pediatrics"
+        if "mental" in text or "psychi" in text:
+            return "psychiatry"
+        if "population" in text or "community" in text or "psm" in text:
+            return "community"
+        return text
+
+    preferred_id = (request.book_id or "").strip()
+    hint = subject_hint(target_subject)
+
+    candidates = []
+    if preferred_id:
+        candidates.extend([book for book in books if book.get("id") == preferred_id])
+
+    if target_subject != "__ALL__":
+        candidates.extend([
+            book for book in books
+            if hint in str(book.get("subject") or "").lower()
+            or str(book.get("subject") or "").lower() in hint
+        ])
+
+    candidates.extend(books)
+
+    # Deduplicate while preserving preference order, and require real chunks.
+    chosen_book = None
+    seen = set()
+    for book in candidates:
+        book_id = book.get("id")
+        if not book_id or book_id in seen:
+            continue
+        seen.add(book_id)
+        try:
+            chunk_query = (
+                supabase
+                .table("book_chunks")
+                .select("id")
+                .eq("book_id", book_id)
+            )
+            if not auto_mode:
+                chunk_query = chunk_query.eq("chapter", chapter)
+            chunk_result = chunk_query.limit(1).execute()
+        except Exception:
+            continue
+        if chunk_result.data:
+            chosen_book = book
+            break
+
+    if not chosen_book:
+        raise HTTPException(
+            status_code=404,
+            detail="No processed textbook chunks are available yet."
         )
 
     if not GITHUB_TOKEN:
@@ -813,8 +865,10 @@ def generate_questions_on_demand(
     payload = {
         "ref": GITHUB_BRANCH,
         "inputs": {
-            "book_id": request.book_id,
+            "book_id": chosen_book["id"],
             "chapter": chapter,
+            "subject": target_subject,
+            "difficulty": target_difficulty,
             "exam_mode": request.exam_mode,
             "count": str(request.count),
         },
@@ -857,7 +911,9 @@ def generate_questions_on_demand(
     return {
         "ok": True,
         "status": "queued",
-        "book_id": request.book_id,
+        "book_id": chosen_book["id"],
+        "subject": target_subject,
+        "difficulty": target_difficulty,
         "chapter": chapter,
         "exam_mode": request.exam_mode,
         "count": request.count,
