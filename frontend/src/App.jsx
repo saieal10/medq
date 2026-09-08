@@ -16,6 +16,7 @@ import MedBot from './pages/MedBot'
 import Mistakes from './pages/Mistakes'
 import Bookmarks from './pages/Bookmarks'
 import History from './pages/History'
+import MedBotFloat from './components/MedBotFloat'
 
 
 function ProtectedRoute({
@@ -93,7 +94,8 @@ export default function App() {
 
   return (
 
-    <Routes>
+    <>
+      <Routes>
 
       <Route
         path="/"
@@ -230,7 +232,14 @@ export default function App() {
         }
       />
 
-    </Routes>
+      </Routes>
+
+      {session && (
+        <MedBotFloat
+          session={session}
+        />
+      )}
+    </>
 
   )
 
