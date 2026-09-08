@@ -153,7 +153,18 @@ function cleanFilterLabel(value, kind = 'topic') {
   // Common extraction artefacts such as e42, e46, e49, etc.
   if (/^e\d+[a-z]?$/i.test(label)) return null
   if (/^(part|section|chapter)\s*[ivxlcdm\d]+$/i.test(label)) return null
+  if (/^part\s+[ivxlcdm\d]+\s*[:.\-–—]/i.test(label)) return null
   if (/^\d+(\.\d+)*$/.test(label)) return null
+
+  const genericLabels = new Set([
+    'medicine',
+    'surgery',
+    'gastroenterology',
+    'clinical medicine',
+    'general medicine',
+    'general'
+  ])
+  if (genericLabels.has(lower)) return null
 
   // Non-clinical front/back matter and media/atlas artefacts.
   const junkPhrases = [
@@ -509,77 +520,98 @@ export default function Practice({
     setLoading(true)
     setError('')
 
-    const [
-      questionResponse,
-      bookResponse,
-      chunkResponse
-    ] = await Promise.all([
-      supabase
-        .from('questions')
-        .select('*')
-        .order(
-          'created_at',
-          {
-            ascending: false
-          }
-        ),
+    try {
+      // Load the essential Practice data first so the page never waits
+      // for the much larger textbook chapter catalogue.
+      const [
+        questionResponse,
+        bookResponse
+      ] = await Promise.all([
+        supabase
+          .from('questions')
+          .select('*')
+          .order(
+            'created_at',
+            { ascending: false }
+          ),
 
-      supabase
-        .from('books')
-        .select(
-          'id,title,subject,status'
-        )
-        .order(
-          'created_at',
-          {
-            ascending: false
-          }
-        ),
+        supabase
+          .from('books')
+          .select('id,title,subject,status')
+          .order(
+            'created_at',
+            { ascending: false }
+          )
+      ])
 
-      supabase
-        .from('book_chunks')
-        .select('book_id,chapter')
-        .order('book_id')
-    ])
+      if (questionResponse.error) {
+        throw questionResponse.error
+      }
 
-    if (questionResponse.error) {
-      setError(
-        questionResponse.error.message
-      )
-
-      setQuestions([])
-    } else {
       setQuestions(
         questionResponse.data || []
       )
+
+      if (bookResponse.error) {
+        console.error(
+          'Books load error:',
+          bookResponse.error
+        )
+        setBooks([])
+      } else {
+        setBooks(
+          bookResponse.data || []
+        )
+      }
+
+    } catch (loadError) {
+      console.error(
+        'Practice load error:',
+        loadError
+      )
+
+      setQuestions([])
+      setError(
+        loadError?.message ||
+        'Could not load the Practice question bank.'
+      )
+
+    } finally {
+      // Never leave the whole Practice page stuck behind a spinner.
+      setLoading(false)
     }
 
-    if (bookResponse.error) {
-      console.error(
-        'Books load error:',
-        bookResponse.error
-      )
+    // Chapter catalogue is secondary. Load it after Practice is usable.
+    loadChapterCatalogue()
+  }
 
-      setBooks([])
-    } else {
-      setBooks(
-        bookResponse.data || []
-      )
-    }
 
-    if (chunkResponse.error) {
-      console.error(
-        'Book chunks load error:',
-        chunkResponse.error
-      )
-      setBookChunks([])
-    } else {
+  async function loadChapterCatalogue() {
+    try {
+      const { data, error: chunkError } =
+        await supabase
+          .from('book_chunks')
+          .select('book_id,chapter,chunk_index')
+          .not('chapter', 'is', null)
+          .range(0, 9999)
+
+      if (chunkError) {
+        throw chunkError
+      }
+
       setBookChunks(
-        chunkResponse.data || []
+        data || []
       )
-    }
 
-    setLoading(false)
+    } catch (chunkError) {
+      console.error(
+        'Chapter catalogue load error:',
+        chunkError
+      )
+
+      // Existing question chapters remain available as the fallback.
+      setBookChunks([])
+    }
   }
 
 
@@ -741,40 +773,69 @@ export default function Practice({
 
 
   const chapters = useMemo(() => {
-    const chunkChapterValues = bookChunks
-      .filter((chunk) => {
-        if (bookId !== 'all') {
-          return chunk.book_id === bookId
-        }
+    // Professional hierarchy: chapters only belong to one selected book.
+    // Never mix Harrison, Gastroenterology, etc. in the same chapter menu.
+    if (bookId === 'all') {
+      return []
+    }
 
-        if (subject !== 'all') {
-          const book = books.find(
-            (item) => item.id === chunk.book_id
-          )
-          return book?.subject === subject
-        }
+    const firstChunkByChapter = new Map()
 
-        return true
+    bookChunks
+      .filter((chunk) => chunk.book_id === bookId)
+      .forEach((chunk) => {
+        const cleaned = cleanFilterLabel(
+          chunk.chapter,
+          'chapter'
+        )
+
+        if (!cleaned) return
+
+        const key = cleaned.toLowerCase()
+        const index = Number(chunk.chunk_index) || 0
+
+        if (
+          !firstChunkByChapter.has(key) ||
+          index < firstChunkByChapter.get(key).index
+        ) {
+          firstChunkByChapter.set(key, {
+            label: cleaned,
+            index
+          })
+        }
       })
-      .map((chunk) => chunk.chapter)
 
-    const questionChapterValues =
-      baseFilteredQuestions.map(
-        (question) => question.chapter
-      )
+    // Fallback for old/small books whose chunks do not yet have clean chapters.
+    baseFilteredQuestions
+      .filter((question) => question.book_id === bookId)
+      .forEach((question) => {
+        const cleaned = cleanFilterLabel(
+          question.chapter,
+          'chapter'
+        )
 
-    return uniqueCleanLabels(
-      [
-        ...chunkChapterValues,
-        ...questionChapterValues
-      ],
-      'chapter'
-    )
+        if (!cleaned) return
+
+        const key = cleaned.toLowerCase()
+        if (!firstChunkByChapter.has(key)) {
+          firstChunkByChapter.set(key, {
+            label: cleaned,
+            index: 999999
+          })
+        }
+      })
+
+    return [...firstChunkByChapter.values()]
+      .sort((a, b) => {
+        if (a.index !== b.index) {
+          return a.index - b.index
+        }
+        return a.label.localeCompare(b.label)
+      })
+      .map((item) => item.label)
   }, [
     bookChunks,
-    books,
     bookId,
-    subject,
     baseFilteredQuestions
   ])
 
@@ -796,13 +857,22 @@ export default function Practice({
 
 
   const topics = useMemo(() => {
+    if (
+      bookId === 'all' ||
+      chapter === 'all'
+    ) {
+      return []
+    }
+
     return uniqueCleanLabels(
-      chapterFilteredQuestions.map(
-        (question) => question.topic
-      ),
+      chapterFilteredQuestions
+        .filter((question) => question.book_id === bookId)
+        .map((question) => question.topic),
       'topic'
     )
   }, [
+    bookId,
+    chapter,
     chapterFilteredQuestions
   ])
 
