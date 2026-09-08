@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  Bookmark,
   BookOpen,
   Brain,
   LogOut,
@@ -114,6 +115,13 @@ export default function Dashboard({ session }) {
           >
             <RotateCcw size={18} />
             Mistakes
+          </button>
+
+          <button
+            onClick={() => navigate('/bookmarks')}
+          >
+            <Bookmark size={18} />
+            Bookmarks
           </button>
 
           <button
