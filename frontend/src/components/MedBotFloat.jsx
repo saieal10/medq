@@ -90,73 +90,96 @@ export default function MedBotFloat({ session }) {
     if (!text || loading) return
 
     setError('')
-
-    const userMessage = {
-      role: 'user',
-      content: text
-    }
-
+    const userMessage = { role: 'user', content: text }
     const conversation = messages
-      .filter((item) =>
-        item.role === 'user' || item.role === 'assistant'
-      )
+      .filter((item) => item.role === 'user' || item.role === 'assistant')
       .slice(-6)
-      .map((item) => ({
-        role: item.role,
-        content: item.content
-      }))
+      .map((item) => ({ role: item.role, content: item.content }))
 
+    // Add an empty assistant bubble immediately; streamed text fills it.
     setMessages((current) => [
       ...current,
-      userMessage
+      userMessage,
+      { role: 'assistant', content: '', sources: [] }
     ])
     setInput('')
     setLoading(true)
 
     try {
       const accessToken = session?.access_token
-      if (!accessToken) {
-        throw new Error('Your login session has expired.')
-      }
+      if (!accessToken) throw new Error('Your login session has expired.')
 
-      const response = await fetch(
-        `${API_URL}/api/medbot/chat`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`
-          },
-          body: JSON.stringify({
-            message: text,
-            book_id: null,
-            question_id: questionId,
-            conversation
-          })
-        }
-      )
-
-      const data = await response.json().catch(() => ({}))
+      const response = await fetch(`${API_URL}/api/medbot/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          message: text,
+          book_id: null,
+          question_id: questionId,
+          conversation
+        })
+      })
 
       if (!response.ok) {
-        throw new Error(
-          data?.detail || 'MedBot could not answer right now.'
-        )
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data?.detail || 'MedBot could not answer right now.')
+      }
+      if (!response.body) throw new Error('Streaming is unavailable in this browser.')
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let serverError = ''
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
+
+        for (const event of events) {
+          const line = event.split('\n').find((item) => item.startsWith('data:'))
+          if (!line) continue
+          let payload = null
+          try { payload = JSON.parse(line.slice(5).trim()) } catch { continue }
+
+          if (payload.type === 'ready' && Array.isArray(payload.sources)) {
+            setMessages((current) => {
+              const next = [...current]
+              const last = next[next.length - 1]
+              if (last?.role === 'assistant') next[next.length - 1] = { ...last, sources: payload.sources }
+              return next
+            })
+          }
+
+          if (payload.type === 'delta' && payload.text) {
+            setMessages((current) => {
+              const next = [...current]
+              const last = next[next.length - 1]
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = { ...last, content: `${last.content || ''}${payload.text}` }
+              }
+              return next
+            })
+          }
+
+          if (payload.type === 'error') serverError = payload.message || 'MedBot could not answer.'
+        }
       }
 
-      setMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          content: data?.answer || 'I could not generate an answer.',
-          sources: Array.isArray(data?.sources) ? data.sources : [],
-          model: data?.model || null
-        }
-      ])
-
+      if (serverError) throw new Error(serverError)
       setQuestionId(null)
-
     } catch (err) {
+      setMessages((current) => {
+        const next = [...current]
+        if (next[next.length - 1]?.role === 'assistant' && !next[next.length - 1].content) next.pop()
+        return next
+      })
       setError(err?.message || 'Something went wrong.')
     } finally {
       setLoading(false)
@@ -196,7 +219,7 @@ export default function MedBotFloat({ session }) {
               <div>
                 <strong style={styles.title}>MedBot</strong>
                 <small style={styles.subtitle}>
-                  AI medical tutor • AMC + FMGE + NEET-PG
+                  Fast AI medical tutor • AMC + FMGE + NEET-PG
                 </small>
               </div>
             </div>
@@ -266,11 +289,11 @@ export default function MedBotFloat({ session }) {
               </div>
             ))}
 
-            {loading && (
+            {loading && messages[messages.length - 1]?.content === '' && (
               <div style={styles.assistantRow}>
                 <div style={styles.thinking}>
                   <Loader2 size={16} />
-                  MedBot is thinking…
+                  Connecting to Gemini…
                 </div>
               </div>
             )}
@@ -315,7 +338,7 @@ export default function MedBotFloat({ session }) {
             </button>
 
             <span>
-              Gemini AI • library-aware
+              Gemini AI • live
             </span>
           </footer>
         </section>
