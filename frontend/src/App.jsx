@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard'
 import Practice from './pages/Practice'
 import Library from './pages/Library'
 import MedBot from './pages/MedBot'
+import Mistakes from './pages/Mistakes'
 
 
 function ProtectedRoute({
@@ -140,6 +141,20 @@ export default function App() {
             session={session}
           >
             <Practice
+              session={session}
+            />
+          </ProtectedRoute>
+        }
+      />
+
+
+      <Route
+        path="/mistakes"
+        element={
+          <ProtectedRoute
+            session={session}
+          >
+            <Mistakes
               session={session}
             />
           </ProtectedRoute>
