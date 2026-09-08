@@ -20,6 +20,7 @@ import {
   Clock3,
   Filter,
   Flag,
+  History as HistoryIcon,
   Home,
   Library,
   LogOut,
@@ -1246,6 +1247,17 @@ export default function Practice({
           >
             <Bookmark size={18} />
             Bookmarks
+          </button>
+
+          <button
+            onClick={() =>
+              navigate(
+                '/history'
+              )
+            }
+          >
+            <HistoryIcon size={18} />
+            History
           </button>
 
           <button
