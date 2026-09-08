@@ -20,7 +20,7 @@ load_dotenv()
 
 app = FastAPI(
     title="MedQ API",
-    version="0.4.0"
+    version="0.5.0"
 )
 
 
@@ -76,6 +76,14 @@ OPENROUTER_MODEL = os.getenv(
     "OPENROUTER_MODEL",
     "openrouter/free"
 )
+
+# MedBot performance controls. These defaults keep the free-tier request
+# small and responsive while preserving textbook grounding.
+MEDBOT_MAX_CHUNKS = int(os.getenv("MEDBOT_MAX_CHUNKS", "1200"))
+MEDBOT_TOP_CHUNKS = int(os.getenv("MEDBOT_TOP_CHUNKS", "4"))
+MEDBOT_CONTEXT_CHARS = int(os.getenv("MEDBOT_CONTEXT_CHARS", "10000"))
+MEDBOT_AI_TIMEOUT = int(os.getenv("MEDBOT_AI_TIMEOUT", "45"))
+MEDBOT_MAX_TOKENS = int(os.getenv("MEDBOT_MAX_TOKENS", "750"))
 
 
 origins = [
@@ -503,11 +511,14 @@ def call_openrouter_medbot(
         "chat/completions"
     )
 
+    # openrouter/free already routes across the currently available free
+    # model pool. Keeping one request avoids burning additional free-tier
+    # requests with retry loops when the account itself is rate-limited.
     payload = {
         "model": OPENROUTER_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 1200,
+        "max_tokens": MEDBOT_MAX_TOKENS,
     }
 
     request = urllib.request.Request(
@@ -532,7 +543,7 @@ def call_openrouter_medbot(
     try:
         with urllib.request.urlopen(
             request,
-            timeout=90
+            timeout=MEDBOT_AI_TIMEOUT
         ) as response:
             raw = response.read().decode(
                 "utf-8"
@@ -551,11 +562,34 @@ def call_openrouter_medbot(
             detail
         )
 
+        # 429 is a quota/rate-limit condition, not a broken MedQ backend.
+        # Do not automatically retry: failed free-tier attempts can consume
+        # request allowance and repeated retries make the UI feel slower.
+        if exc.code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "MedBot's free AI allowance is temporarily "
+                    "rate-limited or has reached its OpenRouter "
+                    "free-tier quota. Please try again later or "
+                    "increase the OpenRouter allowance."
+                )
+            )
+
         raise HTTPException(
             status_code=502,
             detail=(
                 "MedBot AI provider returned "
                 f"an error ({exc.code})."
+            )
+        )
+
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "MedBot's AI provider took too long to respond. "
+                "Please try again."
             )
         )
 
@@ -578,6 +612,10 @@ def call_openrouter_medbot(
         answer = (
             data["choices"][0]["message"]["content"]
         ).strip()
+        used_model = (
+            data.get("model")
+            or OPENROUTER_MODEL
+        )
     except Exception as exc:
         print(
             "MedBot response parse error:",
@@ -593,8 +631,7 @@ def call_openrouter_medbot(
             )
         )
 
-    return answer
-
+    return answer, used_model
 
 
 def trigger_github_workflow(
@@ -733,7 +770,7 @@ def root():
     return {
         "name": "MedQ API",
         "status": "online",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "features": [
             "r2-storage",
             "supabase-books",
@@ -750,7 +787,7 @@ def health():
     return {
         "ok": True,
         "service": "medq-api",
-        "version": "0.3.0"
+        "version": "0.5.0"
     }
 
 
@@ -866,7 +903,8 @@ def medbot_chat(
     try:
         chunks = load_medbot_chunks(
             supabase,
-            book_id=preferred_book_id
+            book_id=preferred_book_id,
+            max_rows=MEDBOT_MAX_CHUNKS
         )
     except Exception as exc:
         print(
@@ -895,7 +933,7 @@ def medbot_chat(
     relevant_chunks = rank_medbot_chunks(
         chunks,
         search_text,
-        limit=6
+        limit=MEDBOT_TOP_CHUNKS
     )
 
     if not relevant_chunks:
@@ -929,7 +967,7 @@ def medbot_chat(
     seen_sources = set()
 
     total_chars = 0
-    max_context_chars = 22000
+    max_context_chars = MEDBOT_CONTEXT_CHARS
 
     for index, chunk in enumerate(
         relevant_chunks,
@@ -1037,7 +1075,7 @@ def medbot_chat(
 
     # Keep only a small amount of recent chat history.
     if request.conversation:
-        for item in request.conversation[-6:]:
+        for item in request.conversation[-4:]:
             role = (
                 item.role
                 or ""
@@ -1054,7 +1092,7 @@ def medbot_chat(
             ):
                 messages.append({
                     "role": role,
-                    "content": content[:4000]
+                    "content": content[:2000]
                 })
 
     messages.append({
@@ -1062,7 +1100,7 @@ def medbot_chat(
         "content": user_prompt
     })
 
-    answer = call_openrouter_medbot(
+    answer, used_model = call_openrouter_medbot(
         messages
     )
 
@@ -1071,7 +1109,7 @@ def medbot_chat(
         "answer": answer,
         "sources": source_items,
         "grounded": True,
-        "model": OPENROUTER_MODEL,
+        "model": used_model,
     }
 
 
