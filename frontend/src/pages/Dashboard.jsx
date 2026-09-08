@@ -21,6 +21,7 @@ export default function Dashboard({ session }) {
     correct: 0
   })
 
+  const [subjectPerformance, setSubjectPerformance] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export default function Dashboard({ session }) {
 
         supabase
           .from('attempts')
-          .select('is_correct')
+          .select('question_id, is_correct')
           .eq('user_id', userId),
 
         supabase
@@ -49,6 +50,68 @@ export default function Dashboard({ session }) {
       ])
 
       setProfile(profileData)
+
+      const questionIds = [
+        ...new Set(
+          (attempts || [])
+            .map((attempt) => attempt.question_id)
+            .filter(Boolean)
+        )
+      ]
+
+      let questionSubjectMap = {}
+
+      if (questionIds.length > 0) {
+        const { data: questionRows } = await supabase
+          .from('questions')
+          .select('id, subject')
+          .in('id', questionIds)
+
+        questionSubjectMap = Object.fromEntries(
+          (questionRows || []).map((question) => [
+            question.id,
+            question.subject || 'General'
+          ])
+        )
+      }
+
+      const performanceMap = {}
+
+      ;(attempts || []).forEach((attempt) => {
+        const subject =
+          questionSubjectMap[attempt.question_id] || 'General'
+
+        if (!performanceMap[subject]) {
+          performanceMap[subject] = {
+            subject,
+            attempted: 0,
+            correct: 0
+          }
+        }
+
+        performanceMap[subject].attempted += 1
+
+        if (attempt.is_correct) {
+          performanceMap[subject].correct += 1
+        }
+      })
+
+      const performance = Object.values(performanceMap)
+        .map((item) => ({
+          ...item,
+          accuracy: item.attempted
+            ? Math.round((item.correct / item.attempted) * 100)
+            : 0
+        }))
+        .sort((a, b) => {
+          if (b.attempted !== a.attempted) {
+            return b.attempted - a.attempted
+          }
+
+          return b.accuracy - a.accuracy
+        })
+
+      setSubjectPerformance(performance)
 
       const attempted =
         attempts?.length || 0
@@ -84,6 +147,28 @@ export default function Dashboard({ session }) {
     profile?.display_name ||
     session.user.email?.split('@')[0] ||
     'Student'
+
+  const rankedSubjects = useMemo(() => {
+    return [...subjectPerformance]
+      .filter((item) => item.attempted > 0)
+      .sort((a, b) => {
+        if (b.accuracy !== a.accuracy) {
+          return b.accuracy - a.accuracy
+        }
+
+        return b.attempted - a.attempted
+      })
+  }, [subjectPerformance])
+
+  const strongestSubject =
+    rankedSubjects.length > 0
+      ? rankedSubjects[0]
+      : null
+
+  const weakestSubject =
+    rankedSubjects.length > 1
+      ? rankedSubjects[rankedSubjects.length - 1]
+      : null
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -280,48 +365,123 @@ export default function Dashboard({ session }) {
                   </div>
 
                   <h2>
-                    Your weak and strong subjects will
-                    appear here.
+                    See where you are strongest and where
+                    you need more practice.
                   </h2>
 
                 </div>
 
               </div>
 
-              <div className="subject-placeholder">
+              {subjectPerformance.length === 0 ? (
 
-                {[
-                  'Medicine',
-                  'Surgery',
-                  'OBGYN',
-                  'Pediatrics',
-                  'Pharmacology',
-                  'Pathology'
-                ].map((subject) => (
+                <div className="subject-placeholder">
 
-                  <div key={subject}>
-
+                  <div>
                     <span>
-                      {subject}
+                      No subject data yet
                     </span>
 
                     <div className="bar muted">
-                      <i
-                        style={{
-                          width: '0%'
-                        }}
-                      />
+                      <i style={{ width: '0%' }} />
                     </div>
 
                     <b>
                       —
                     </b>
+                  </div>
+
+                </div>
+
+              ) : (
+
+                <>
+
+                  <div
+                    className="dashboard-grid"
+                    style={{
+                      marginTop: '20px',
+                      marginBottom: '24px'
+                    }}
+                  >
+
+                    <div className="panel">
+
+                      <div className="panel-kicker">
+                        STRONGEST SUBJECT
+                      </div>
+
+                      <h3>
+                        {strongestSubject?.subject || '—'}
+                      </h3>
+
+                      <p>
+                        {strongestSubject
+                          ? `${strongestSubject.accuracy}% accuracy · ${strongestSubject.correct}/${strongestSubject.attempted} correct`
+                          : 'Keep practicing to build your subject profile.'}
+                      </p>
+
+                    </div>
+
+                    <div className="panel">
+
+                      <div className="panel-kicker">
+                        NEEDS MOST WORK
+                      </div>
+
+                      <h3>
+                        {weakestSubject?.subject || '—'}
+                      </h3>
+
+                      <p>
+                        {weakestSubject
+                          ? `${weakestSubject.accuracy}% accuracy · ${weakestSubject.correct}/${weakestSubject.attempted} correct`
+                          : 'Practice more than one subject to compare performance.'}
+                      </p>
+
+                    </div>
 
                   </div>
 
-                ))}
+                  <div className="subject-placeholder">
 
-              </div>
+                    {subjectPerformance.map((item) => (
+
+                      <div key={item.subject}>
+
+                        <span>
+                          {item.subject}
+                          <small
+                            style={{
+                              display: 'block',
+                              marginTop: '3px'
+                            }}
+                          >
+                            {item.correct}/{item.attempted} correct · {item.attempted} attempted
+                          </small>
+                        </span>
+
+                        <div className="bar">
+                          <i
+                            style={{
+                              width: `${item.accuracy}%`
+                            }}
+                          />
+                        </div>
+
+                        <b>
+                          {item.accuracy}%
+                        </b>
+
+                      </div>
+
+                    ))}
+
+                  </div>
+
+                </>
+
+              )}
 
             </section>
 
