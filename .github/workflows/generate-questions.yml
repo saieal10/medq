@@ -4,13 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       book_id:
-        description: "Supabase book ID"
+        description: "Supabase grounding book ID"
         required: true
         type: string
       chapter:
-        description: "Exact processed chapter name"
+        description: "Exact chapter or __AUTO__"
         required: true
+        default: "__AUTO__"
         type: string
+      subject:
+        description: "Target subject/domain or __ALL__"
+        required: true
+        default: "__ALL__"
+        type: string
+      difficulty:
+        description: "all, easy, medium, or hard"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - easy
+          - medium
+          - hard
       exam_mode:
         description: "amc, fmge, or mixed"
         required: true
@@ -29,6 +45,7 @@ on:
           - "10"
           - "20"
           - "50"
+          - "100"
 
 jobs:
   generate-questions:
@@ -49,10 +66,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests supabase
 
-      - name: Generate chapter questions
+      - name: Generate MedQ exam questions
         env:
           BOOK_ID: ${{ inputs.book_id }}
           CHAPTER: ${{ inputs.chapter }}
+          TARGET_SUBJECT: ${{ inputs.subject }}
+          TARGET_DIFFICULTY: ${{ inputs.difficulty }}
           EXAM_MODE: ${{ inputs.exam_mode }}
           QUESTION_COUNT: ${{ inputs.count }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
