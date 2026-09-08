@@ -4,7 +4,7 @@ import {
   useState
 } from 'react'
 
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 
 const API_URL =
@@ -15,6 +15,11 @@ const API_URL =
 export default function MedBot({
   session
 }) {
+
+  const [searchParams] = useSearchParams()
+
+  const questionId =
+    searchParams.get('question')
 
   const [messages, setMessages] =
     useState([
@@ -40,6 +45,20 @@ export default function MedBot({
 
   const bottomRef =
     useRef(null)
+
+
+  useEffect(() => {
+
+    if (
+      questionId
+      && !input.trim()
+    ) {
+      setInput(
+        'Explain this practice question, why the correct answer is correct, why the other options are wrong, and give me the key AMC/FMGE exam points.'
+      )
+    }
+
+  }, [questionId])
 
 
   useEffect(() => {
@@ -141,7 +160,7 @@ export default function MedBot({
 
               book_id: null,
 
-              question_id: null,
+              question_id: questionId || null,
 
               conversation:
                 previousConversation
@@ -265,10 +284,16 @@ export default function MedBot({
         <div>
 
           <Link
-            to="/dashboard"
+            to={
+              questionId
+                ? '/practice'
+                : '/dashboard'
+            }
             className="medbot-back"
           >
-            ← Dashboard
+            {questionId
+              ? '← Practice'
+              : '← Dashboard'}
           </Link>
 
           <div className="medbot-title-row">
@@ -308,6 +333,12 @@ export default function MedBot({
       <main className="medbot-shell">
 
         <section className="medbot-chat">
+
+          {questionId && (
+            <div className="medbot-context-banner">
+              Practice question context attached
+            </div>
+          )}
 
           <div className="medbot-messages">
 
