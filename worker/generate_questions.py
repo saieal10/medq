@@ -14,6 +14,8 @@ BOOK_ID = os.environ["BOOK_ID"].strip()
 CHAPTER = os.getenv("CHAPTER", "__AUTO__").strip()
 AUTO_MODE = CHAPTER == "__AUTO__"
 TARGET_SUBJECT = os.getenv("TARGET_SUBJECT", "__ALL__").strip()
+TARGET_TOPIC = os.getenv("TARGET_TOPIC", "__ALL__").strip()
+TARGET_SUBTOPIC = os.getenv("TARGET_SUBTOPIC", "__ALL__").strip()
 TARGET_DIFFICULTY = os.getenv("TARGET_DIFFICULTY", "all").strip().lower()
 EXAM_MODE = os.getenv("EXAM_MODE", "mixed").strip().lower()
 REQUESTED_COUNT = int(os.getenv("QUESTION_COUNT", "20"))
@@ -155,9 +157,11 @@ def source_score(target_subject: str, chunk: Dict[str, Any], book_subject: str) 
         f"{book_subject} {chunk.get('chapter') or ''} "
         f"{clean(chunk.get('content'), 2500)}"
     ).lower()
-    keywords = SUBJECT_KEYWORDS.get(target_subject)
+    keywords = list(SUBJECT_KEYWORDS.get(target_subject) or [])
     if not keywords:
         keywords = [part.lower() for part in re.findall(r"[A-Za-z]{4,}", target_subject)[:8]]
+    curriculum_text = " ".join(v for v in [TARGET_TOPIC, TARGET_SUBTOPIC] if v and v != "__ALL__")
+    keywords.extend(part.lower() for part in re.findall(r"[A-Za-z]{4,}", curriculum_text)[:12])
     return sum(haystack.count(keyword.lower()) for keyword in keywords if keyword)
 
 
@@ -218,6 +222,8 @@ You are MedQ's senior medical examination question writer.
 
 TARGET EXAM: {EXAM_MODE.upper()}
 TARGET SUBJECT / DOMAIN: {target_subject}
+TARGET TOPIC: {TARGET_TOPIC if TARGET_TOPIC != "__ALL__" else "Any appropriate topic within this subject"}
+TARGET SUBTOPIC: {TARGET_SUBTOPIC if TARGET_SUBTOPIC != "__ALL__" else "Any appropriate subtopic within the selected topic/subject"}
 
 {exam_instruction(EXAM_MODE, target_subject)}
 
@@ -229,6 +235,9 @@ is incomplete. Never ask about authors, publication details, timestamps, page nu
 or table-of-contents artefacts.
 
 {difficulty_rule}
+
+If a TARGET TOPIC or TARGET SUBTOPIC is specified, every question must stay within that curriculum area.
+The library is grounding, not the syllabus; do not drift merely because a retrieved passage is broader.
 
 Create exactly {amount} original, non-duplicate single-best-answer MCQs.
 Every question must:
@@ -334,12 +343,14 @@ def prepare(
     elif exam_type not in {"amc", "fmge"}:
         exam_type = "fmge"
 
-    topic = clean(q.get("topic"), 250)
-    if not topic or len(topic.split()) > 14:
-        topic = target_subject
+    generated_topic = clean(q.get("topic"), 250)
+    if not generated_topic or len(generated_topic.split()) > 14:
+        generated_topic = target_subject
 
     source_used = chunk is not None
-    chapter = clean(chunk.get("chapter"), 250) if source_used else target_subject
+    # Student-facing hierarchy is curriculum-based; raw PDF/video headings remain internal only.
+    chapter = TARGET_TOPIC if TARGET_TOPIC != "__ALL__" else target_subject
+    topic = TARGET_SUBTOPIC if TARGET_SUBTOPIC != "__ALL__" else generated_topic
 
     sigs.add(sig)
     return {
@@ -386,6 +397,8 @@ def main():
     print(f"Anchor library book: {book.get('title')}")
     print(f"Exam: {EXAM_MODE}")
     print(f"Target subject: {TARGET_SUBJECT}")
+    print(f"Target topic: {TARGET_TOPIC}")
+    print(f"Target subtopic: {TARGET_SUBTOPIC}")
     print(f"Difficulty: {TARGET_DIFFICULTY}")
     print(f"Requested: {REQUESTED_COUNT}")
     print(f"Plan: {dict(remaining)}")
