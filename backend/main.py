@@ -20,7 +20,7 @@ load_dotenv()
 
 app = FastAPI(
     title="MedQ API",
-    version="0.5.0"
+    version="0.6.0"
 )
 
 
@@ -188,6 +188,13 @@ class MedBotRequest(BaseModel):
     book_id: Optional[str] = None
     question_id: Optional[str] = None
     conversation: Optional[List[MedBotMessage]] = None
+
+
+class GenerateQuestionsRequest(BaseModel):
+    book_id: str
+    chapter: str
+    exam_mode: str = "mixed"
+    count: int = 20
 
 
 # ---------------------------------------------------------
@@ -796,6 +803,140 @@ def health():
 # ---------------------------------------------------------
 # MedBot textbook-grounded chat
 # ---------------------------------------------------------
+
+@app.post("/api/questions/generate")
+def generate_questions_on_demand(
+    request: GenerateQuestionsRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    require_authenticated_user(authorization)
+
+    if request.exam_mode not in {"amc", "fmge", "mixed"}:
+        raise HTTPException(
+            status_code=400,
+            detail="exam_mode must be amc, fmge, or mixed."
+        )
+
+    if request.count not in {10, 20, 50}:
+        raise HTTPException(
+            status_code=400,
+            detail="count must be 10, 20, or 50."
+        )
+
+    chapter = (request.chapter or "").strip()
+    if not chapter or len(chapter) > 250:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a valid chapter."
+        )
+
+    supabase = get_supabase()
+
+    try:
+        book_result = (
+            supabase
+            .table("books")
+            .select("id,title,subject,status")
+            .eq("id", request.book_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to load book: {str(exc)}"
+        )
+
+    if not book_result.data:
+        raise HTTPException(status_code=404, detail="Book not found.")
+
+    try:
+        chunk_result = (
+            supabase
+            .table("book_chunks")
+            .select("id")
+            .eq("book_id", request.book_id)
+            .eq("chapter", chapter)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to validate chapter: {str(exc)}"
+        )
+
+    if not chunk_result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="No processed textbook chunks were found for this chapter."
+        )
+
+    if not GITHUB_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="GitHub Actions token is not configured."
+        )
+
+    workflow_url = (
+        f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/"
+        f"{GITHUB_REPO_NAME}/actions/workflows/"
+        f"generate-questions.yml/dispatches"
+    )
+
+    payload = {
+        "ref": GITHUB_BRANCH,
+        "inputs": {
+            "book_id": request.book_id,
+            "chapter": chapter,
+            "exam_mode": request.exam_mode,
+            "count": str(request.count),
+        },
+    }
+
+    github_request = urllib.request.Request(
+        workflow_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "MedQ-API",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(github_request, timeout=20) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub generation dispatch failed ({exc.code}): {body[:300]}"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to start question worker: {str(exc)}"
+        )
+
+    if status not in {200, 201, 202, 204}:
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub did not accept the generation job."
+        )
+
+    return {
+        "ok": True,
+        "status": "queued",
+        "book_id": request.book_id,
+        "chapter": chapter,
+        "exam_mode": request.exam_mode,
+        "count": request.count,
+    }
+
 
 @app.post("/api/medbot/chat")
 def medbot_chat(
