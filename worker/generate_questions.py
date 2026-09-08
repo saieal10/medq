@@ -14,9 +14,8 @@ EXAM_MODE = os.getenv("EXAM_MODE", "mixed").strip().lower()
 REQUESTED_COUNT = int(os.getenv("QUESTION_COUNT", "20"))
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
-OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
@@ -126,42 +125,49 @@ SOURCE TEXT:
 
 
 def call_ai(chunk: Dict[str, Any], amount: int, subject: str) -> List[Dict[str, Any]]:
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent"
+    )
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "x-goog-api-key": GEMINI_API_KEY,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://medq-practice.netlify.app",
-        "X-Title": "MedQ",
     }
     payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Generate rigorous textbook-grounded medical exam questions. "
-                    "Output valid JSON only."
-                ),
-            },
-            {"role": "user", "content": prompt_for(chunk, amount, subject)},
-        ],
-        "temperature": 0.25,
-        "max_tokens": 5000,
+        "systemInstruction": {
+            "parts": [{
+                "text": (
+                    "You are a rigorous medical examination question writer. "
+                    "Use the supplied textbook source as the authoritative factual basis. "
+                    "Return valid JSON only."
+                )
+            }]
+        },
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": prompt_for(chunk, amount, subject)}]
+        }],
+        "generationConfig": {
+            "temperature": 0.25,
+            "maxOutputTokens": 7000,
+            "responseMimeType": "application/json",
+        },
     }
 
     last_error = None
     for attempt in range(3):
-        response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=180)
+        response = requests.post(url, headers=headers, json=payload, timeout=180)
         if response.ok:
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            parts = data["candidates"][0]["content"]["parts"]
+            content = "\n".join(part.get("text", "") for part in parts if part.get("text"))
             return parse_json_array(content)
-        last_error = f"OpenRouter {response.status_code}: {response.text[:300]}"
+        last_error = f"Gemini {response.status_code}: {response.text[:500]}"
         if response.status_code == 429:
             time.sleep(20 * (attempt + 1))
         else:
             time.sleep(5)
-    raise RuntimeError(last_error or "AI request failed")
-
+    raise RuntimeError(last_error or "Gemini request failed")
 
 def prepare(q: Dict[str, Any], chunk: Dict[str, Any], subject: str, sigs: set) -> Dict[str, Any] | None:
     required = ["stem","option_a","option_b","option_c","option_d","option_e","correct_option","explanation"]
