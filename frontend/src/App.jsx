@@ -14,6 +14,7 @@ import Practice from './pages/Practice'
 import Library from './pages/Library'
 import MedBot from './pages/MedBot'
 import Mistakes from './pages/Mistakes'
+import Bookmarks from './pages/Bookmarks'
 
 
 function ProtectedRoute({
@@ -155,6 +156,20 @@ export default function App() {
             session={session}
           >
             <Mistakes
+              session={session}
+            />
+          </ProtectedRoute>
+        }
+      />
+
+
+      <Route
+        path="/bookmarks"
+        element={
+          <ProtectedRoute
+            session={session}
+          >
+            <Bookmarks
               session={session}
             />
           </ProtectedRoute>
