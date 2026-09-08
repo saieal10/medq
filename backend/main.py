@@ -191,6 +191,8 @@ class GenerateQuestionsRequest(BaseModel):
     book_id: Optional[str] = None
     chapter: str = "__AUTO__"
     subject: str = "__ALL__"
+    topic: str = "__ALL__"
+    subtopic: str = "__ALL__"
     difficulty: str = "all"
     exam_mode: str = "mixed"
     count: int = 20
@@ -752,6 +754,8 @@ def generate_questions_on_demand(
 
     chapter = (request.chapter or "__AUTO__").strip()
     target_subject = (request.subject or "__ALL__").strip()
+    target_topic = (request.topic or "__ALL__").strip()
+    target_subtopic = (request.subtopic or "__ALL__").strip()
     target_difficulty = (request.difficulty or "all").strip().lower()
     auto_mode = chapter == "__AUTO__"
 
@@ -759,6 +763,10 @@ def generate_questions_on_demand(
         raise HTTPException(status_code=400, detail="Invalid chapter.")
     if not target_subject or len(target_subject) > 160:
         raise HTTPException(status_code=400, detail="Invalid subject.")
+    if not target_topic or len(target_topic) > 180:
+        raise HTTPException(status_code=400, detail="Invalid topic.")
+    if not target_subtopic or len(target_subtopic) > 180:
+        raise HTTPException(status_code=400, detail="Invalid subtopic.")
     if target_difficulty not in {"all", "easy", "medium", "hard"}:
         raise HTTPException(status_code=400, detail="Invalid difficulty.")
 
@@ -868,6 +876,8 @@ def generate_questions_on_demand(
             "book_id": chosen_book["id"],
             "chapter": chapter,
             "subject": target_subject,
+            "topic": target_topic,
+            "subtopic": target_subtopic,
             "difficulty": target_difficulty,
             "exam_mode": request.exam_mode,
             "count": str(request.count),
