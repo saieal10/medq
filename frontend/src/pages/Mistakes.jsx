@@ -212,6 +212,39 @@ export default function Mistakes({
     }, [books])
 
 
+  function optionText(question, letter) {
+
+    if (!question || !letter) {
+      return ''
+    }
+
+    const key =
+      `option_${letter.toLowerCase()}`
+
+    return question[key] || ''
+
+  }
+
+
+  function formatAnswer(question, letter) {
+
+    if (!letter) {
+      return '—'
+    }
+
+    const text =
+      optionText(
+        question,
+        letter
+      )
+
+    return text
+      ? `${letter} — ${text}`
+      : letter
+
+  }
+
+
   const uniqueMistakes =
     useMemo(() => {
 
@@ -382,9 +415,13 @@ export default function Mistakes({
               UNIQUE QUESTIONS TO REVIEW
             </span>
 
-            <strong>
+            <div style={{
+              marginTop: '8px',
+              fontSize: '28px',
+              fontWeight: 800
+            }}>
               {uniqueMistakes.length}
-            </strong>
+            </div>
 
           </div>
 
@@ -477,23 +514,21 @@ export default function Mistakes({
 
                           <div className="question-tags">
 
-                            {question.subject && (
-                              <span>
-                                {question.subject}
-                              </span>
-                            )}
-
-                            {question.chapter && (
-                              <span>
-                                {question.chapter}
-                              </span>
-                            )}
-
-                            {question.topic && (
-                              <span>
-                                {question.topic}
-                              </span>
-                            )}
+                            {[
+                              question.subject,
+                              question.chapter,
+                              question.topic
+                            ]
+                              .filter(Boolean)
+                              .filter(
+                                (value, tagIndex, array) =>
+                                  array.indexOf(value) === tagIndex
+                              )
+                              .map((value) => (
+                                <span key={value}>
+                                  {value}
+                                </span>
+                              ))}
 
                           </div>
 
@@ -517,8 +552,14 @@ export default function Mistakes({
                             YOUR ANSWER
                           </span>
 
-                          <strong>
-                            {selectedOption || '—'}
+                          <strong style={{
+                            display: 'block',
+                            marginTop: '8px'
+                          }}>
+                            {formatAnswer(
+                              question,
+                              selectedOption
+                            )}
                           </strong>
 
                         </div>
@@ -530,8 +571,14 @@ export default function Mistakes({
                             CORRECT ANSWER
                           </span>
 
-                          <strong>
-                            {correctOption || '—'}
+                          <strong style={{
+                            display: 'block',
+                            marginTop: '8px'
+                          }}>
+                            {formatAnswer(
+                              question,
+                              correctOption
+                            )}
                           </strong>
 
                         </div>
