@@ -498,18 +498,11 @@ def load_book_titles(
 
 
 def call_gemini_medbot(messages: List[Dict[str, str]]):
-
     if not GEMINI_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="GEMINI_API_KEY is not configured on the backend."
-        )
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the backend.")
 
-    # Gemini generateContent accepts the full conversation. System messages
-    # are supplied through systemInstruction; assistant becomes model.
     system_text = ""
     contents = []
-
     for item in messages:
         role = (item.get("role") or "").lower()
         text = (item.get("content") or "").strip()
@@ -518,81 +511,60 @@ def call_gemini_medbot(messages: List[Dict[str, str]]):
         if role == "system":
             system_text += ("\n" if system_text else "") + text
             continue
-        contents.append({
-            "role": "model" if role == "assistant" else "user",
-            "parts": [{"text": text}]
-        })
+        contents.append({"role": "model" if role == "assistant" else "user", "parts": [{"text": text}]})
 
     payload = {
         "contents": contents,
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": MEDBOT_MAX_TOKENS,
-        },
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": MEDBOT_MAX_TOKENS},
     }
-
     if system_text:
-        payload["systemInstruction"] = {
-            "parts": [{"text": system_text}]
-        }
+        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
-    )
+    # Account/project access can differ by Gemini model. Try the configured
+    # model first, then stable fallbacks instead of exposing a useless 404.
+    models = []
+    for model in [GEMINI_MODEL, "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]:
+        if model and model not in models:
+            models.append(model)
 
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
-        headers={
-            "x-goog-api-key": GEMINI_API_KEY,
-            "Content-Type": "application/json",
-            "User-Agent": "MedQ-Backend",
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=MEDBOT_AI_TIMEOUT) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
+    last_detail = ""
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json", "User-Agent": "MedQ-Backend"},
+        )
         try:
-            detail = exc.read().decode("utf-8")
-        except Exception:
-            detail = str(exc)
-        print("Gemini MedBot error:", detail)
-        if exc.code == 429:
-            raise HTTPException(
-                status_code=429,
-                detail="MedBot's Gemini allowance is temporarily rate-limited. Please try again shortly."
-            )
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini returned an error ({exc.code})."
-        )
-    except Exception as exc:
-        print("Gemini connection error:", str(exc))
-        raise HTTPException(
-            status_code=502,
-            detail="MedBot could not contact Gemini."
-        )
+            with urllib.request.urlopen(request, timeout=MEDBOT_AI_TIMEOUT) as response:
+                raw = response.read().decode("utf-8")
+            data = json.loads(raw)
+            parts = data["candidates"][0]["content"]["parts"]
+            answer = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+            if answer:
+                return answer, model
+        except urllib.error.HTTPError as exc:
+            try:
+                last_detail = exc.read().decode("utf-8")
+            except Exception:
+                last_detail = str(exc)
+            print(f"Gemini MedBot {model} error:", last_detail)
+            if exc.code == 429:
+                raise HTTPException(status_code=429, detail="MedBot's Gemini free allowance is temporarily rate-limited. Please try again shortly.")
+            if exc.code in (400, 403, 404):
+                continue
+            raise HTTPException(status_code=502, detail=f"Gemini returned an error ({exc.code}).")
+        except Exception as exc:
+            last_detail = str(exc)
+            print(f"Gemini MedBot {model} connection error:", last_detail)
+            continue
 
-    try:
-        data = json.loads(raw)
-        parts = data["candidates"][0]["content"]["parts"]
-        answer = "\n".join(
-            part.get("text", "") for part in parts if part.get("text")
-        ).strip()
-        if not answer:
-            raise ValueError("empty Gemini response")
-    except Exception as exc:
-        print("Gemini response parse error:", str(exc), raw[:1000])
-        raise HTTPException(
-            status_code=502,
-            detail="MedBot received an invalid Gemini response."
-        )
+    raise HTTPException(
+        status_code=502,
+        detail="MedBot could not use any available Gemini model. Check the Gemini API key/project access in Google AI Studio."
+    )
 
-    return answer, GEMINI_MODEL
 
 def trigger_github_workflow(
     book_id: str,
@@ -730,7 +702,7 @@ def root():
     return {
         "name": "MedQ API",
         "status": "online",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "features": [
             "r2-storage",
             "supabase-books",
@@ -747,7 +719,7 @@ def health():
     return {
         "ok": True,
         "service": "medq-api",
-        "version": "0.7.0"
+        "version": "0.8.0"
     }
 
 
@@ -777,6 +749,7 @@ def generate_questions_on_demand(
         )
 
     chapter = (request.chapter or "").strip()
+    auto_mode = chapter == "__AUTO__"
     if not chapter or len(chapter) > 250:
         raise HTTPException(
             status_code=400,
@@ -804,15 +777,15 @@ def generate_questions_on_demand(
         raise HTTPException(status_code=404, detail="Book not found.")
 
     try:
-        chunk_result = (
+        chunk_query = (
             supabase
             .table("book_chunks")
             .select("id")
             .eq("book_id", request.book_id)
-            .eq("chapter", chapter)
-            .limit(1)
-            .execute()
         )
+        if not auto_mode:
+            chunk_query = chunk_query.eq("chapter", chapter)
+        chunk_result = chunk_query.limit(1).execute()
     except Exception as exc:
         raise HTTPException(
             status_code=500,
