@@ -4,6 +4,7 @@ import re
 import json
 import time
 import tempfile
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import boto3
@@ -45,29 +46,38 @@ OPENROUTER_URL = (
 
 
 # =========================================================
-# LIMITS FOR FIRST VERSION
+# PROCESSING SETTINGS
 # =========================================================
 
-# Keeps GitHub Actions and free AI usage under control.
-# We can increase these later.
-MAX_PAGES = int(
-    os.getenv("MAX_PAGES", "40")
-)
+# Whole textbook is processed.
+# There is intentionally NO MAX_PAGES.
 
 CHUNK_SIZE = int(
-    os.getenv("CHUNK_SIZE", "9000")
+    os.getenv("CHUNK_SIZE", "22000")
 )
 
 QUESTIONS_PER_CHUNK = int(
-    os.getenv("QUESTIONS_PER_CHUNK", "5")
-)
-
-MAX_CHUNKS = int(
-    os.getenv("MAX_CHUNKS", "8")
+    os.getenv("QUESTIONS_PER_CHUNK", "6")
 )
 
 OCR_DPI = int(
-    os.getenv("OCR_DPI", "160")
+    os.getenv("OCR_DPI", "150")
+)
+
+NATIVE_TEXT_MIN_CHARS = int(
+    os.getenv("NATIVE_TEXT_MIN_CHARS", "140")
+)
+
+MIN_USABLE_PAGE_CHARS = int(
+    os.getenv("MIN_USABLE_PAGE_CHARS", "60")
+)
+
+AI_DELAY_SECONDS = float(
+    os.getenv("AI_DELAY_SECONDS", "2")
+)
+
+AI_RETRIES = int(
+    os.getenv("AI_RETRIES", "3")
 )
 
 
@@ -125,39 +135,55 @@ r2 = boto3.client(
 
 
 # =========================================================
-# BOOK STATUS
+# GENERAL HELPERS
 # =========================================================
 
-def update_book_status(
-    status: str
-):
-    print(
-        f"Updating book status → {status}"
-    )
+def utc_now() -> str:
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
+
+def update_book(
+    fields: Dict[str, Any]
+):
     (
         supabase
         .table("books")
-        .update({
-            "status": status
-        })
-        .eq(
-            "id",
-            BOOK_ID
-        )
+        .update(fields)
+        .eq("id", BOOK_ID)
         .execute()
     )
 
 
+def set_stage(
+    stage: str,
+    status: str = "processing",
+    **extra
+):
+    data = {
+        "status": status,
+        "processing_stage": stage,
+    }
+
+    data.update(extra)
+
+    update_book(data)
+
+    print(
+        f"[BOOK] {stage} | {status}"
+    )
+
+
 # =========================================================
-# DOWNLOAD PDF FROM R2
+# R2 DOWNLOAD
 # =========================================================
 
 def download_pdf(
     destination: str
 ):
     print(
-        "Downloading PDF from R2..."
+        "[R2] Downloading textbook..."
     )
 
     r2.download_file(
@@ -171,7 +197,8 @@ def download_pdf(
     )
 
     print(
-        f"Downloaded {size / 1024 / 1024:.2f} MB"
+        "[R2] Downloaded "
+        f"{size / 1024 / 1024:.2f} MB"
     )
 
 
@@ -183,6 +210,9 @@ def clean_text(
     text: str
 ) -> str:
 
+    if not text:
+        return ""
+
     text = text.replace(
         "\x00",
         " "
@@ -191,6 +221,12 @@ def clean_text(
     text = re.sub(
         r"[ \t]+",
         " ",
+        text
+    )
+
+    text = re.sub(
+        r"\n[ \t]+\n",
+        "\n\n",
         text
     )
 
@@ -210,10 +246,6 @@ def clean_text(
 def ocr_page(
     page
 ) -> str:
-
-    print(
-        "Running OCR on scanned page..."
-    )
 
     zoom = OCR_DPI / 72
 
@@ -235,7 +267,8 @@ def ocr_page(
 
     text = pytesseract.image_to_string(
         image,
-        lang="eng"
+        lang="eng",
+        config="--psm 6"
     )
 
     return clean_text(
@@ -251,10 +284,6 @@ def extract_pages(
     pdf_path: str
 ) -> List[Dict[str, Any]]:
 
-    print(
-        "Opening PDF..."
-    )
-
     document = fitz.open(
         pdf_path
     )
@@ -263,24 +292,25 @@ def extract_pages(
         document
     )
 
-    pages_to_process = min(
-        total_pages,
-        MAX_PAGES
+    print(
+        f"[PDF] Total pages: {total_pages}"
     )
 
-    print(
-        f"PDF pages: {total_pages}"
-    )
-
-    print(
-        f"Processing first {pages_to_process} pages"
-    )
+    update_book({
+        "page_count": total_pages,
+        "total_pages": total_pages,
+        "processed_pages": 0,
+        "extraction_progress": 0
+    })
 
     extracted = []
 
+    last_saved_progress = -1
+
     for index in range(
-        pages_to_process
+        total_pages
     ):
+
         page = document[
             index
         ]
@@ -289,43 +319,188 @@ def extract_pages(
             index + 1
         )
 
-        print(
-            f"Page {page_number}/{pages_to_process}"
-        )
-
-        text = clean_text(
+        native_text = clean_text(
             page.get_text(
                 "text"
             )
         )
 
-        # If very little embedded text is present,
-        # treat page as scanned and OCR it.
-        if len(text) < 120:
+        text = native_text
+
+        extraction_method = "text"
+
+        # OCR ONLY when the PDF page does not already
+        # contain enough usable digital text.
+        if (
+            len(native_text)
+            < NATIVE_TEXT_MIN_CHARS
+        ):
+
             try:
-                text = ocr_page(
+
+                ocr_text = ocr_page(
                     page
                 )
+
+                if len(ocr_text) > len(
+                    native_text
+                ):
+
+                    text = ocr_text
+                    extraction_method = "ocr"
+
+                else:
+
+                    extraction_method = (
+                        "text"
+                    )
+
             except Exception as exc:
+
                 print(
-                    f"OCR failed on page "
+                    "[OCR] Failed page "
                     f"{page_number}: {exc}"
                 )
 
-        if len(text) >= 80:
+                text = native_text
+
+                extraction_method = (
+                    "text-fallback"
+                )
+
+        if (
+            len(text)
+            >= MIN_USABLE_PAGE_CHARS
+        ):
+
             extracted.append({
                 "page": page_number,
-                "text": text
+                "text": text,
+                "method":
+                    extraction_method
             })
+
+        progress = int(
+            (
+                page_number
+                / total_pages
+            )
+            * 100
+        )
+
+        if (
+            progress
+            >= last_saved_progress + 2
+            or page_number
+            == total_pages
+        ):
+
+            update_book({
+                "processed_pages":
+                    page_number,
+
+                "extraction_progress":
+                    progress
+            })
+
+            last_saved_progress = (
+                progress
+            )
+
+            print(
+                "[PDF] Extraction "
+                f"{progress}% "
+                f"({page_number}/"
+                f"{total_pages})"
+            )
 
     document.close()
 
     print(
-        f"Extracted usable text from "
-        f"{len(extracted)} pages"
+        "[PDF] Usable pages: "
+        f"{len(extracted)}/"
+        f"{total_pages}"
     )
 
     return extracted
+
+
+# =========================================================
+# SIMPLE CHAPTER / HEADING DETECTION
+# =========================================================
+
+def detect_heading(
+    text: str
+) -> Optional[str]:
+
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    for line in lines[
+        :15
+    ]:
+
+        candidate = re.sub(
+            r"\s+",
+            " ",
+            line
+        ).strip()
+
+        if len(candidate) < 4:
+            continue
+
+        if len(candidate) > 120:
+            continue
+
+        words = candidate.split()
+
+        if len(words) > 14:
+            continue
+
+        alpha_chars = [
+            char
+            for char in candidate
+            if char.isalpha()
+        ]
+
+        if not alpha_chars:
+            continue
+
+        uppercase_chars = sum(
+            1
+            for char in alpha_chars
+            if char.isupper()
+        )
+
+        upper_ratio = (
+            uppercase_chars
+            / len(alpha_chars)
+        )
+
+        numbered_heading = bool(
+            re.match(
+                (
+                    r"^(chapter\s+)?"
+                    r"\d+[\s:.\-]"
+                ),
+                candidate,
+                flags=re.IGNORECASE
+            )
+        )
+
+        if (
+            upper_ratio > 0.65
+            or numbered_heading
+        ):
+
+            return candidate[
+                :120
+            ]
+
+    return None
 
 
 # =========================================================
@@ -339,33 +514,55 @@ def make_chunks(
     chunks = []
 
     current_text = ""
+
     current_pages = []
+
+    current_methods = []
+
+    active_heading = None
 
     for page in pages:
 
-        page_marker = (
-            f"\n\n"
-            f"--- PAGE {page['page']} ---\n"
+        detected = detect_heading(
+            page["text"]
         )
 
+        if detected:
+            active_heading = detected
+
         addition = (
-            page_marker
-            + page["text"]
+            f"\n\n--- PAGE "
+            f"{page['page']} ---\n"
+            f"{page['text']}"
         )
 
         if (
+            current_text
+            and
             len(current_text)
             + len(addition)
             > CHUNK_SIZE
-            and current_text
         ):
+
             chunks.append({
-                "text": current_text,
-                "pages": current_pages
+                "text":
+                    current_text.strip(),
+
+                "pages":
+                    current_pages.copy(),
+
+                "methods":
+                    current_methods.copy(),
+
+                "chapter":
+                    active_heading
             })
 
             current_text = ""
+
             current_pages = []
+
+            current_methods = []
 
         current_text += addition
 
@@ -373,189 +570,201 @@ def make_chunks(
             page["page"]
         )
 
+        current_methods.append(
+            page["method"]
+        )
+
     if current_text:
+
         chunks.append({
-            "text": current_text,
-            "pages": current_pages
+            "text":
+                current_text.strip(),
+
+            "pages":
+                current_pages.copy(),
+
+            "methods":
+                current_methods.copy(),
+
+            "chapter":
+                active_heading
         })
 
-    chunks = chunks[
-        :MAX_CHUNKS
-    ]
-
     print(
-        f"Created {len(chunks)} AI chunks"
+        "[CHUNK] Created "
+        f"{len(chunks)} chunks"
     )
 
     return chunks
 
 
 # =========================================================
-# OPENROUTER
+# CHUNK DATABASE STORAGE
 # =========================================================
 
-def call_openrouter(
-    text: str,
-    pages: List[int]
+def get_extraction_method(
+    methods: List[str]
+) -> str:
+
+    unique_methods = set(
+        methods
+    )
+
+    if unique_methods == {
+        "text"
+    }:
+        return "text"
+
+    if unique_methods == {
+        "ocr"
+    }:
+        return "ocr"
+
+    return "mixed"
+
+
+def save_book_chunks(
+    chunks: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
 
-    page_range = (
-        f"{min(pages)}-{max(pages)}"
-        if pages
-        else "unknown"
+    print(
+        "[DB] Saving book chunks..."
     )
 
-    system_prompt = """
-You are an expert medical examination question writer.
+    rows = []
 
-Create high-quality single-best-answer medical MCQs suitable for:
-1. AMC CAT MCQ examination preparation
-2. FMGE examination preparation
+    for index, chunk in enumerate(
+        chunks
+    ):
 
-Only use facts contained in the provided source text.
+        pages = chunk[
+            "pages"
+        ]
 
-Do not invent facts that are not present in the source.
+        chapter = (
+            chunk.get(
+                "chapter"
+            )
+            or
+            (
+                f"Pages "
+                f"{min(pages)}-"
+                f"{max(pages)}"
+            )
+        )
 
-Questions should test clinical reasoning, diagnosis, investigation,
-management, pharmacology, pathology, complications, or core concepts
-when those topics are supported by the source.
+        rows.append({
+            "book_id":
+                BOOK_ID,
 
-Avoid trivial questions.
+            "chunk_index":
+                index,
 
-Every question must have:
-- exactly one best answer
-- five options A-E
-- plausible distractors
-- clear explanation
-- difficulty: easy, medium, or hard
-- chapter
-- topic
-- source_page
+            "chapter":
+                chapter[:250],
 
-Return ONLY a valid JSON array.
+            "section":
+                None,
 
-Do not use Markdown.
-Do not wrap JSON in ```.
+            "topic":
+                None,
 
-Required JSON structure:
+            "page_start":
+                min(pages),
 
-[
-  {
-    "stem": "question text",
-    "option_a": "answer A",
-    "option_b": "answer B",
-    "option_c": "answer C",
-    "option_d": "answer D",
-    "option_e": "answer E",
-    "correct_option": "A",
-    "explanation": "clear medical explanation",
-    "chapter": "chapter or section name",
-    "topic": "specific medical topic",
-    "difficulty": "medium",
-    "source_page": 12
-  }
-]
-""".strip()
+            "page_end":
+                max(pages),
 
-    user_prompt = f"""
-Subject: {BOOK_SUBJECT}
+            "content":
+                chunk["text"],
 
-Source pages:
-{page_range}
+            "word_count":
+                len(
+                    chunk["text"]
+                    .split()
+                ),
 
-Create exactly {QUESTIONS_PER_CHUNK} good MCQs from this source.
+            "extraction_method":
+                get_extraction_method(
+                    chunk[
+                        "methods"
+                    ]
+                ),
 
-SOURCE TEXT:
+            "processing_status":
+                "ready"
+        })
 
-{text}
-""".strip()
+    batch_size = 25
 
-    headers = {
-        "Authorization": (
-            f"Bearer {OPENROUTER_API_KEY}"
-        ),
-        "Content-Type":
-            "application/json",
-        "HTTP-Referer":
-            "https://medq-practice.netlify.app",
-        "X-Title":
-            "MedQ"
-    }
+    for start in range(
+        0,
+        len(rows),
+        batch_size
+    ):
 
-    payload = {
-        "model":
-            OPENROUTER_MODEL,
+        batch = rows[
+            start:
+            start + batch_size
+        ]
 
-        "messages": [
-            {
-                "role":
-                    "system",
+        (
+            supabase
+            .table("book_chunks")
+            .upsert(
+                batch,
+                on_conflict=(
+                    "book_id,"
+                    "chunk_index"
+                )
+            )
+            .execute()
+        )
 
-                "content":
-                    system_prompt
-            },
-            {
-                "role":
-                    "user",
+        print(
+            "[DB] Stored chunks "
+            f"{start + 1}-"
+            f"{min(start + batch_size, len(rows))}"
+        )
 
-                "content":
-                    user_prompt
-            }
-        ],
+    response = (
+        supabase
+        .table("book_chunks")
+        .select(
+            (
+                "id,"
+                "chunk_index,"
+                "chapter,"
+                "page_start,"
+                "page_end,"
+                "content"
+            )
+        )
+        .eq(
+            "book_id",
+            BOOK_ID
+        )
+        .order(
+            "chunk_index"
+        )
+        .execute()
+    )
 
-        "temperature":
-            0.25,
-
-        "max_tokens":
-            4500
-    }
+    saved_chunks = (
+        response.data
+        or []
+    )
 
     print(
-        "Calling OpenRouter..."
+        "[DB] Knowledge chunks ready: "
+        f"{len(saved_chunks)}"
     )
 
-    response = requests.post(
-        OPENROUTER_URL,
-        headers=headers,
-        json=payload,
-        timeout=180
-    )
-
-    if not response.ok:
-        print(
-            response.text
-        )
-
-        raise RuntimeError(
-            "OpenRouter request failed: "
-            f"{response.status_code}"
-        )
-
-    data = response.json()
-
-    content = (
-        data
-        .get(
-            "choices",
-            [{}]
-        )[0]
-        .get(
-            "message",
-            {}
-        )
-        .get(
-            "content",
-            ""
-        )
-    )
-
-    return parse_ai_json(
-        content
-    )
+    return saved_chunks
 
 
 # =========================================================
-# AI JSON CLEANUP
+# AI JSON PARSER
 # =========================================================
 
 def parse_ai_json(
@@ -563,8 +772,9 @@ def parse_ai_json(
 ) -> List[Dict[str, Any]]:
 
     if not content:
+
         raise RuntimeError(
-            "AI returned an empty response."
+            "AI returned empty response."
         )
 
     content = content.strip()
@@ -596,40 +806,331 @@ def parse_ai_json(
         start == -1
         or end == -1
     ):
+
         raise RuntimeError(
-            "AI response did not contain a JSON array."
+            (
+                "AI response did not "
+                "contain a JSON array."
+            )
         )
 
-    content = content[
-        start:end + 1
+    json_text = content[
+        start:
+        end + 1
     ]
 
     try:
+
         parsed = json.loads(
-            content
+            json_text
         )
+
     except Exception as exc:
+
         print(
-            "AI OUTPUT:"
+            "[AI] Invalid JSON:"
         )
 
         print(
-            content[:5000]
+            json_text[:3000]
         )
 
         raise RuntimeError(
-            f"Unable to parse AI JSON: {exc}"
+            (
+                "Unable to parse AI JSON: "
+                f"{exc}"
+            )
         )
 
     if not isinstance(
         parsed,
         list
     ):
+
         raise RuntimeError(
-            "AI response JSON was not a list."
+            (
+                "AI response JSON "
+                "was not a list."
+            )
         )
 
     return parsed
+
+
+# =========================================================
+# OPENROUTER
+# =========================================================
+
+def call_openrouter(
+    chunk: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+
+    page_start = chunk[
+        "page_start"
+    ]
+
+    page_end = chunk[
+        "page_end"
+    ]
+
+    chapter = (
+        chunk.get(
+            "chapter"
+        )
+        or "Unknown"
+    )
+
+    system_prompt = """
+You are MedQ's senior medical examination question writer.
+
+MedQ prepares medical students specifically for:
+
+1. Australian Medical Council (AMC) CAT MCQ style
+2. Foreign Medical Graduate Examination (FMGE) style
+
+Your task is to transform medical textbook content into
+original high-quality single-best-answer medical questions.
+
+SOURCE RULES
+
+Use the supplied textbook passage as the primary medical source.
+
+Do not invent unsupported facts.
+
+Do not simply copy textbook sentences into questions.
+
+Every question must be answerable from the supplied source.
+
+AMC STYLE
+
+AMC questions should strongly emphasise:
+
+- realistic clinical vignettes
+- clinical reasoning
+- diagnosis
+- differential diagnosis
+- next best investigation
+- interpretation
+- immediate management
+- definitive management
+- complications
+- pharmacological decisions
+- patient safety
+- prioritisation
+- next-best-step reasoning
+
+When the textbook passage supports a clinical question,
+prefer clinical reasoning over simple recall for AMC.
+
+FMGE STYLE
+
+FMGE questions should include an appropriate mixture of:
+
+- high-yield facts
+- clinical application
+- diagnosis
+- pathology
+- microbiology
+- pharmacology
+- investigations
+- treatment
+- complications
+- mechanisms
+- characteristic findings
+- important associations
+
+QUALITY RULES
+
+Every question must:
+
+- have exactly five options A-E
+- have exactly one best answer
+- contain plausible distractors
+- avoid ambiguous wording
+- avoid clues that reveal the answer
+- test an important medical concept
+- contain a useful explanation
+- explain why the correct option is correct
+- specify the most appropriate source page
+- specify a topic
+- specify difficulty as easy, medium or hard
+
+Generate approximately half AMC and half FMGE questions.
+
+Do not create multiple questions testing the exact same fact.
+
+Return ONLY valid JSON.
+
+No Markdown.
+
+Required JSON format:
+
+[
+  {
+    "exam_type": "AMC",
+    "question_type": "clinical_reasoning",
+    "stem": "Question...",
+    "option_a": "...",
+    "option_b": "...",
+    "option_c": "...",
+    "option_d": "...",
+    "option_e": "...",
+    "correct_option": "A",
+    "explanation": "...",
+    "chapter": "...",
+    "topic": "...",
+    "difficulty": "medium",
+    "source_page": 123,
+    "source_page_end": 123
+  }
+]
+""".strip()
+
+    user_prompt = f"""
+SUBJECT:
+{BOOK_SUBJECT}
+
+CHAPTER OR SECTION:
+{chapter}
+
+SOURCE PAGES:
+{page_start}-{page_end}
+
+Create exactly {QUESTIONS_PER_CHUNK} useful questions
+from this textbook material.
+
+Use both AMC and FMGE patterns.
+
+Prioritise clinically and educationally important concepts.
+
+TEXTBOOK CONTENT:
+
+{chunk["content"]}
+""".strip()
+
+    headers = {
+        "Authorization":
+            f"Bearer "
+            f"{OPENROUTER_API_KEY}",
+
+        "Content-Type":
+            "application/json",
+
+        "HTTP-Referer":
+            (
+                "https://"
+                "medq-practice."
+                "netlify.app"
+            ),
+
+        "X-Title":
+            "MedQ"
+    }
+
+    payload = {
+        "model":
+            OPENROUTER_MODEL,
+
+        "messages": [
+            {
+                "role":
+                    "system",
+
+                "content":
+                    system_prompt
+            },
+            {
+                "role":
+                    "user",
+
+                "content":
+                    user_prompt
+            }
+        ],
+
+        "temperature":
+            0.2,
+
+        "max_tokens":
+            7000
+    }
+
+    last_error = None
+
+    for attempt in range(
+        1,
+        AI_RETRIES + 1
+    ):
+
+        try:
+
+            print(
+                "[AI] Request attempt "
+                f"{attempt}/"
+                f"{AI_RETRIES}"
+            )
+
+            response = requests.post(
+                OPENROUTER_URL,
+                headers=headers,
+                json=payload,
+                timeout=240
+            )
+
+            if not response.ok:
+
+                raise RuntimeError(
+                    (
+                        "OpenRouter "
+                        f"{response.status_code}: "
+                        f"{response.text[:1000]}"
+                    )
+                )
+
+            data = response.json()
+
+            content = (
+                data
+                .get(
+                    "choices",
+                    [{}]
+                )[0]
+                .get(
+                    "message",
+                    {}
+                )
+                .get(
+                    "content",
+                    ""
+                )
+            )
+
+            return parse_ai_json(
+                content
+            )
+
+        except Exception as exc:
+
+            last_error = exc
+
+            print(
+                "[AI] Attempt failed: "
+                f"{exc}"
+            )
+
+            if attempt < AI_RETRIES:
+
+                time.sleep(
+                    5 * attempt
+                )
+
+    raise RuntimeError(
+        (
+            "OpenRouter failed after "
+            f"{AI_RETRIES} attempts: "
+            f"{last_error}"
+        )
+    )
 
 
 # =========================================================
@@ -637,8 +1138,9 @@ def parse_ai_json(
 # =========================================================
 
 def prepare_question(
-    question: Dict[str, Any]
-) -> Dict[str, Any] | None:
+    question: Dict[str, Any],
+    chunk: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
 
     required_fields = [
         "stem",
@@ -652,25 +1154,24 @@ def prepare_question(
     ]
 
     for field in required_fields:
+
         if not question.get(
             field
         ):
+
             print(
-                f"Skipping question: missing {field}"
+                "[VALIDATION] Missing "
+                f"{field}"
             )
 
             return None
 
-    correct_option = (
-        str(
-            question.get(
-                "correct_option",
-                ""
-            )
+    correct_option = str(
+        question.get(
+            "correct_option",
+            ""
         )
-        .strip()
-        .upper()
-    )
+    ).strip().upper()
 
     if correct_option not in [
         "A",
@@ -679,46 +1180,159 @@ def prepare_question(
         "D",
         "E"
     ]:
-        print(
-            "Skipping question: "
-            "invalid correct option"
-        )
 
         return None
 
-    difficulty = (
-        str(
-            question.get(
-                "difficulty",
-                "medium"
-            )
+    exam_type = str(
+        question.get(
+            "exam_type",
+            "FMGE"
         )
-        .strip()
-        .lower()
-    )
+    ).strip().upper()
+
+    if exam_type not in [
+        "AMC",
+        "FMGE"
+    ]:
+
+        exam_type = "FMGE"
+
+    difficulty = str(
+        question.get(
+            "difficulty",
+            "medium"
+        )
+    ).strip().lower()
 
     if difficulty not in [
         "easy",
         "medium",
         "hard"
     ]:
+
         difficulty = "medium"
 
     source_page = question.get(
         "source_page"
     )
 
+    source_page_end = question.get(
+        "source_page_end"
+    )
+
     try:
-        if source_page is not None:
-            source_page = int(
-                source_page
-            )
+
+        source_page = int(
+            source_page
+        )
+
     except Exception:
-        source_page = None
+
+        source_page = chunk[
+            "page_start"
+        ]
+
+    try:
+
+        source_page_end = int(
+            source_page_end
+        )
+
+    except Exception:
+
+        source_page_end = (
+            source_page
+        )
+
+    if (
+        source_page
+        < chunk["page_start"]
+        or source_page
+        > chunk["page_end"]
+    ):
+
+        source_page = chunk[
+            "page_start"
+        ]
+
+    if (
+        source_page_end
+        < source_page
+        or source_page_end
+        > chunk["page_end"]
+    ):
+
+        source_page_end = (
+            source_page
+        )
+
+    stem = str(
+        question["stem"]
+    ).strip()
+
+    options = [
+        str(
+            question[
+                "option_a"
+            ]
+        ).strip(),
+
+        str(
+            question[
+                "option_b"
+            ]
+        ).strip(),
+
+        str(
+            question[
+                "option_c"
+            ]
+        ).strip(),
+
+        str(
+            question[
+                "option_d"
+            ]
+        ).strip(),
+
+        str(
+            question[
+                "option_e"
+            ]
+        ).strip(),
+    ]
+
+    # Reject duplicate options.
+    if len(
+        set(
+            option.lower()
+            for option
+            in options
+        )
+    ) != 5:
+
+        return None
+
+    if len(stem) < 25:
+
+        return None
+
+    explanation = str(
+        question[
+            "explanation"
+        ]
+    ).strip()
+
+    if len(explanation) < 30:
+
+        return None
 
     return {
         "book_id":
             BOOK_ID,
+
+        "source_chunk_id":
+            chunk["id"],
 
         "subject":
             BOOK_SUBJECT,
@@ -727,7 +1341,10 @@ def prepare_question(
             str(
                 question.get(
                     "chapter",
-                    ""
+                    chunk.get(
+                        "chapter",
+                        ""
+                    )
                 )
             )[:250],
 
@@ -739,50 +1356,88 @@ def prepare_question(
                 )
             )[:250],
 
+        "exam_type":
+            exam_type,
+
+        "question_type":
+            str(
+                question.get(
+                    "question_type",
+                    "concept"
+                )
+            )[:100],
+
         "difficulty":
             difficulty,
 
         "stem":
-            str(
-                question["stem"]
-            ).strip(),
+            stem,
 
         "option_a":
-            str(
-                question["option_a"]
-            ).strip(),
+            options[0],
 
         "option_b":
-            str(
-                question["option_b"]
-            ).strip(),
+            options[1],
 
         "option_c":
-            str(
-                question["option_c"]
-            ).strip(),
+            options[2],
 
         "option_d":
-            str(
-                question["option_d"]
-            ).strip(),
+            options[3],
 
         "option_e":
-            str(
-                question["option_e"]
-            ).strip(),
+            options[4],
 
         "correct_option":
             correct_option,
 
         "explanation":
-            str(
-                question["explanation"]
-            ).strip(),
+            explanation,
 
         "source_page":
-            source_page
+            source_page,
+
+        "source_page_end":
+            source_page_end,
+
+        "review_status":
+            "generated",
+
+        "quality_score":
+            None,
+
+        "reviewer_notes":
+            None
     }
+
+
+# =========================================================
+# RESUME CHECK
+# =========================================================
+
+def questions_exist_for_chunk(
+    chunk_id: str
+) -> bool:
+
+    response = (
+        supabase
+        .table("questions")
+        .select("id")
+        .eq(
+            "book_id",
+            BOOK_ID
+        )
+        .eq(
+            "source_chunk_id",
+            chunk_id
+        )
+        .limit(1)
+        .execute()
+    )
+
+    return bool(
+        response.data
+    )
 
 
 # =========================================================
@@ -790,25 +1445,50 @@ def prepare_question(
 # =========================================================
 
 def save_questions(
-    questions: List[Dict[str, Any]]
+    generated: List[Dict[str, Any]],
+    chunk: Dict[str, Any]
 ) -> int:
 
     valid_questions = []
 
-    for question in questions:
+    local_stems = set()
+
+    for question in generated:
+
         cleaned = prepare_question(
-            question
+            question,
+            chunk
         )
 
-        if cleaned:
-            valid_questions.append(
-                cleaned
-            )
+        if not cleaned:
+
+            continue
+
+        normalized = re.sub(
+            r"\W+",
+            "",
+            cleaned[
+                "stem"
+            ].lower()
+        )
+
+        if normalized in local_stems:
+
+            continue
+
+        local_stems.add(
+            normalized
+        )
+
+        valid_questions.append(
+            cleaned
+        )
 
     if not valid_questions:
+
         return 0
 
-    result = (
+    response = (
         supabase
         .table("questions")
         .insert(
@@ -818,37 +1498,147 @@ def save_questions(
     )
 
     count = len(
-        result.data or []
+        response.data
+        or []
     )
 
     print(
-        f"Saved {count} questions"
+        "[DB] Saved "
+        f"{count} questions"
     )
 
     return count
 
 
 # =========================================================
-# REMOVE OLD QUESTIONS
+# EXISTING QUESTION COUNT
 # =========================================================
 
-def clear_existing_questions():
+def count_new_questions() -> int:
 
-    print(
-        "Removing existing generated questions "
-        "for this book..."
-    )
-
-    (
+    response = (
         supabase
         .table("questions")
-        .delete()
+        .select(
+            "id,source_chunk_id"
+        )
         .eq(
             "book_id",
             BOOK_ID
         )
         .execute()
     )
+
+    rows = (
+        response.data
+        or []
+    )
+
+    return sum(
+        1
+        for row in rows
+        if row.get(
+            "source_chunk_id"
+        )
+    )
+
+
+# =========================================================
+# GENERATE QUESTIONS
+# =========================================================
+
+def generate_questions(
+    chunks: List[Dict[str, Any]]
+) -> int:
+
+    total_chunks = len(
+        chunks
+    )
+
+    total_created = (
+        count_new_questions()
+    )
+
+    for index, chunk in enumerate(
+        chunks,
+        start=1
+    ):
+
+        if questions_exist_for_chunk(
+            chunk["id"]
+        ):
+
+            print(
+                "[AI] Chunk "
+                f"{index}/"
+                f"{total_chunks} "
+                "already processed — "
+                "skipping"
+            )
+
+        else:
+
+            print(
+                "--------------------------------"
+            )
+
+            print(
+                "[AI] Chunk "
+                f"{index}/"
+                f"{total_chunks}"
+            )
+
+            print(
+                "[AI] Pages "
+                f"{chunk['page_start']}-"
+                f"{chunk['page_end']}"
+            )
+
+            try:
+
+                generated = (
+                    call_openrouter(
+                        chunk
+                    )
+                )
+
+                saved = save_questions(
+                    generated,
+                    chunk
+                )
+
+                total_created += (
+                    saved
+                )
+
+            except Exception as exc:
+
+                print(
+                    "[AI] Chunk failed: "
+                    f"{exc}"
+                )
+
+        progress = int(
+            (
+                index
+                / total_chunks
+            )
+            * 100
+        )
+
+        update_book({
+            "question_progress":
+                progress,
+
+            "questions_generated":
+                total_created
+        })
+
+        time.sleep(
+            AI_DELAY_SECONDS
+        )
+
+    return total_created
 
 
 # =========================================================
@@ -858,11 +1648,11 @@ def clear_existing_questions():
 def main():
 
     print(
-        "====================================="
+        "========================================"
     )
 
     print(
-        "MEDQ BOOK PROCESSOR"
+        "MEDQ FULL TEXTBOOK PROCESSOR"
     )
 
     print(
@@ -874,11 +1664,14 @@ def main():
     )
 
     print(
-        "====================================="
+        "========================================"
     )
 
-    update_book_status(
-        "processing"
+    set_stage(
+        "downloading",
+        processing_started_at=
+            utc_now(),
+        error_message=None
     )
 
     try:
@@ -894,92 +1687,143 @@ def main():
                 pdf_path
             )
 
+            # -----------------------------------------
+            # EXTRACT WHOLE TEXTBOOK
+            # -----------------------------------------
+
+            set_stage(
+                "extracting"
+            )
+
             pages = extract_pages(
                 pdf_path
             )
 
             if not pages:
+
                 raise RuntimeError(
-                    "No usable text could be extracted "
-                    "from this PDF."
+                    (
+                        "No usable textbook "
+                        "text could be extracted."
+                    )
                 )
+
+            # -----------------------------------------
+            # CREATE KNOWLEDGE CHUNKS
+            # -----------------------------------------
+
+            set_stage(
+                "chunking",
+                extraction_progress=100
+            )
 
             chunks = make_chunks(
                 pages
             )
 
             if not chunks:
+
                 raise RuntimeError(
-                    "No usable text chunks were created."
-                )
-
-            clear_existing_questions()
-
-            total_saved = 0
-
-            for index, chunk in enumerate(
-                chunks,
-                start=1
-            ):
-
-                print(
-                    "-------------------------------------"
-                )
-
-                print(
-                    f"AI chunk {index}/{len(chunks)}"
-                )
-
-                try:
-
-                    generated = call_openrouter(
-                        chunk["text"],
-                        chunk["pages"]
+                    (
+                        "No textbook chunks "
+                        "were created."
                     )
-
-                    saved = save_questions(
-                        generated
-                    )
-
-                    total_saved += saved
-
-                except Exception as exc:
-
-                    print(
-                        f"Chunk {index} failed: {exc}"
-                    )
-
-                # Be gentle with free API limits.
-                time.sleep(
-                    4
                 )
 
-            if total_saved == 0:
+            saved_chunks = (
+                save_book_chunks(
+                    chunks
+                )
+            )
+
+            if not saved_chunks:
+
                 raise RuntimeError(
-                    "Processing finished but no valid "
-                    "MCQs were generated."
+                    (
+                        "Textbook chunks "
+                        "could not be stored."
+                    )
                 )
 
-            update_book_status(
-                "ready"
+            # At this point the book has already
+            # become a reusable MedBot knowledge base.
+
+            # -----------------------------------------
+            # GENERATE AMC + FMGE QUESTIONS
+            # -----------------------------------------
+
+            set_stage(
+                "generating_questions",
+                extraction_progress=100
+            )
+
+            total_questions = (
+                generate_questions(
+                    saved_chunks
+                )
+            )
+
+            if total_questions == 0:
+
+                raise RuntimeError(
+                    (
+                        "Textbook extraction "
+                        "worked, but no new "
+                        "questions were generated."
+                    )
+                )
+
+            # -----------------------------------------
+            # FINISH
+            # -----------------------------------------
+
+            update_book({
+                "status":
+                    "ready",
+
+                "processing_stage":
+                    "ready",
+
+                "extraction_progress":
+                    100,
+
+                "question_progress":
+                    100,
+
+                "questions_generated":
+                    total_questions,
+
+                "processed_pages":
+                    len(pages),
+
+                "processing_completed_at":
+                    utc_now(),
+
+                "error_message":
+                    None
+            })
+
+            print(
+                "========================================"
             )
 
             print(
-                "====================================="
+                "MEDQ BOOK PROCESSING COMPLETE"
             )
 
             print(
-                f"SUCCESS: {total_saved} questions created"
+                "New-format questions: "
+                f"{total_questions}"
             )
 
             print(
-                "====================================="
+                "========================================"
             )
 
     except Exception as exc:
 
         print(
-            "====================================="
+            "========================================"
         )
 
         print(
@@ -991,16 +1835,29 @@ def main():
         )
 
         print(
-            "====================================="
+            "========================================"
         )
 
         try:
-            update_book_status(
-                "failed"
-            )
+
+            update_book({
+                "status":
+                    "failed",
+
+                "processing_stage":
+                    "failed",
+
+                "error_message":
+                    str(exc)[:1000]
+            })
+
         except Exception as status_exc:
+
             print(
-                "Could not update failure status:"
+                (
+                    "Could not update "
+                    "failure status:"
+                )
             )
 
             print(
