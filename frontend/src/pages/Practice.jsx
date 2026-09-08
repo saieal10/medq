@@ -1092,13 +1092,13 @@ export default function Practice({
             Practice
           </button>
 
-          <button>
+          <button
+            onClick={() =>
+              navigate('/mistakes')
+            }
+          >
             <RotateCcw size={18} />
             Mistakes
-
-            <span className="soon">
-              soon
-            </span>
           </button>
 
           <button
