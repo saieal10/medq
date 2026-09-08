@@ -933,330 +933,189 @@ def generate_questions_on_demand(
 @app.post("/api/medbot/chat")
 def medbot_chat(
     request: MedBotRequest,
-    authorization: Optional[str] = Header(
-        default=None
-    )
+    authorization: Optional[str] = Header(default=None)
 ):
+    """AI-first MedBot.
 
-    require_authenticated_user(
-        authorization
-    )
+    Gemini is the main medical tutor. Processed MedQ books are optional
+    retrieval context when they are relevant, never a requirement for an
+    answer. Practice-question context is also supplied when MedBot is opened
+    from Practice.
+    """
 
-    message = (
-        request.message
-        or ""
-    ).strip()
+    require_authenticated_user(authorization)
 
+    message = (request.message or "").strip()
     if len(message) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="Please enter a question."
-        )
-
+        raise HTTPException(status_code=400, detail="Please enter a question.")
     if len(message) > 5000:
-        raise HTTPException(
-            status_code=400,
-            detail="Question is too long."
-        )
+        raise HTTPException(status_code=400, detail="Question is too long.")
 
     supabase = get_supabase()
-
     search_text = message
     question_context = ""
     preferred_book_id = request.book_id
 
-    # If MedBot was opened from a practice question,
-    # use that question as extra retrieval context.
+    # Optional practice-question context.
     if request.question_id:
         try:
             result = (
-                supabase
-                .table("questions")
+                supabase.table("questions")
                 .select("*")
-                .eq(
-                    "id",
-                    request.question_id
-                )
+                .eq("id", request.question_id)
                 .limit(1)
                 .execute()
             )
-
             if result.data:
                 question = result.data[0]
-
-                stem = (
-                    question.get("stem")
-                    or ""
-                )
-
-                topic = (
-                    question.get("topic")
-                    or ""
-                )
-
-                chapter = (
-                    question.get("chapter")
-                    or ""
-                )
-
-                explanation = (
-                    question.get("explanation")
-                    or ""
-                )
+                stem = question.get("stem") or ""
+                topic = question.get("topic") or ""
+                subtopic = question.get("subtopic") or ""
+                chapter = question.get("chapter") or ""
+                explanation = question.get("explanation") or ""
 
                 if not preferred_book_id:
-                    preferred_book_id = (
-                        question.get("book_id")
-                    )
+                    preferred_book_id = question.get("book_id")
 
-                search_text = " ".join([
-                    message,
-                    stem,
-                    topic,
-                    chapter
-                ])
-
-                question_context = (
-                    "Practice question context:\n"
-                    f"{stem}\n"
+                search_text = " ".join(
+                    [message, stem, topic, subtopic, chapter]
                 )
-
+                question_context = f"Practice question:\n{stem}\n"
                 if explanation:
                     question_context += (
-                        "Existing generated explanation: "
+                        "Existing explanation for reference:\n"
                         f"{explanation}\n"
                     )
-
         except Exception as exc:
-            print(
-                "Unable to load question context:",
-                str(exc)
-            )
+            print("Unable to load question context:", str(exc))
 
+    # Library retrieval is optional. A library error must not prevent the AI
+    # tutor from answering from its medical knowledge.
+    relevant_chunks = []
     try:
         chunks = load_medbot_chunks(
             supabase,
             book_id=preferred_book_id,
-            max_rows=MEDBOT_MAX_CHUNKS
+            max_rows=MEDBOT_MAX_CHUNKS,
         )
+        if chunks:
+            relevant_chunks = rank_medbot_chunks(
+                chunks,
+                search_text,
+                limit=MEDBOT_TOP_CHUNKS,
+            )
     except Exception as exc:
-        print(
-            "Unable to load book chunks:",
-            str(exc)
-        )
+        print("Optional MedBot library retrieval skipped:", str(exc))
+        relevant_chunks = []
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "MedBot could not search the "
-                "processed textbook library."
-            )
-        )
-
-    if not chunks:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No processed textbook content is "
-                "available yet. Wait for a book to "
-                "finish processing."
-            )
-        )
-
-    relevant_chunks = rank_medbot_chunks(
-        chunks,
-        search_text,
-        limit=MEDBOT_TOP_CHUNKS
-    )
-
-    if not relevant_chunks:
-        fallback_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are MedBot, a concise medical study assistant for AMC and FMGE preparation. "
-                    "No relevant uploaded textbook excerpt was found for this question, so answer from reliable general medical knowledge. "
-                    "State briefly that this answer is from general medical knowledge, not the uploaded textbook library. "
-                    "Explain clinical reasoning, key clues, diagnosis/concept, investigation or next step, management, and exam traps when relevant. "
-                    "Do not give personal medical advice and do not mention page numbers."
-                )
-            }
-        ]
-        if request.conversation:
-            for item in request.conversation[-6:]:
-                role = (item.role or "").lower()
-                content = (item.content or "").strip()
-                if role in ["user", "assistant"] and content:
-                    fallback_messages.append({"role": role, "content": content[:2500]})
-        fallback_messages.append({"role": "user", "content": message})
-        answer, used_model = call_gemini_medbot(fallback_messages)
-        return {
-            "ok": True,
-            "answer": answer,
-            "sources": [],
-            "grounded": False,
-            "model": used_model,
-        }
-
-    book_ids = [
-        str(chunk.get("book_id"))
-        for chunk in relevant_chunks
-        if chunk.get("book_id")
-    ]
-
-    book_titles = load_book_titles(
-        supabase,
-        book_ids
-    )
-
-    context_sections = []
     source_items = []
-    seen_sources = set()
+    context_sections = []
 
-    total_chars = 0
-    max_context_chars = MEDBOT_CONTEXT_CHARS
+    if relevant_chunks:
+        book_ids = [
+            str(chunk.get("book_id"))
+            for chunk in relevant_chunks
+            if chunk.get("book_id")
+        ]
+        try:
+            book_titles = load_book_titles(supabase, book_ids)
+        except Exception:
+            book_titles = {}
 
-    for index, chunk in enumerate(
-        relevant_chunks,
-        start=1
-    ):
+        seen_sources = set()
+        total_chars = 0
 
-        body = get_chunk_text(
-            chunk
-        )
+        for index, chunk in enumerate(relevant_chunks, start=1):
+            body = get_chunk_text(chunk)
+            if not body:
+                continue
 
-        if not body:
-            continue
+            remaining = MEDBOT_CONTEXT_CHARS - total_chars
+            if remaining <= 0:
+                break
 
-        book_id = str(
-            chunk.get("book_id")
-            or ""
-        )
+            body = body[:remaining]
+            total_chars += len(body)
 
-        title = (
-            book_titles.get(book_id)
-            or "Uploaded textbook"
-        )
+            book_id = str(chunk.get("book_id") or "")
+            title = book_titles.get(book_id) or "MedQ textbook"
+            chapter = get_chunk_chapter(chunk)
 
-        chapter = get_chunk_chapter(
-            chunk
-        )
-
-        remaining = (
-            max_context_chars - total_chars
-        )
-
-        if remaining <= 0:
-            break
-
-        body = body[:remaining]
-        total_chars += len(body)
-
-        header = f"SOURCE {index}: {title}"
-
-        if chapter:
-            header += f" | {chapter}"
-
-        context_sections.append(
-            f"{header}\n{body}"
-        )
-
-        source_key = (
-            title,
-            chapter
-        )
-
-        if source_key not in seen_sources:
-            seen_sources.add(
-                source_key
-            )
-
-            item = {
-                "book_title": title
-            }
-
+            header = f"REFERENCE {index}: {title}"
             if chapter:
-                item["chapter"] = chapter
+                header += f" | {chapter}"
+            context_sections.append(f"{header}\n{body}")
 
-            source_items.append(
-                item
-            )
-
-    context_text = "\n\n---\n\n".join(
-        context_sections
-    )
+            # Keep source labels compact. Raw headings remain optional metadata
+            # and are not required in the answer itself.
+            key = (title, chapter)
+            if key not in seen_sources:
+                seen_sources.add(key)
+                item = {"book_title": title}
+                if chapter:
+                    item["chapter"] = chapter
+                source_items.append(item)
 
     system_prompt = (
-        "You are MedBot, MedQ's medical reasoning assistant for an MBBS student preparing for AMC and FMGE. "
-        "Treat the supplied MedQ textbook excerpts as the PRIMARY source whenever they are relevant. "
-        "Do not misquote or invent textbook content. If the excerpts are incomplete, you MAY supplement with reliable general medical knowledge, "
-        "but explicitly label the supplemental part as 'General medical knowledge'. For clinical questions, reason in this order when useful: "
-        "key clues -> likely diagnosis/concept -> why -> investigation/next best step -> management -> exam trap. For MCQs, explain why the best "
-        "answer wins and why important distractors lose. Distinguish AMC-style clinical/next-best-step reasoning from FMGE high-yield recall when useful. "
-        "Use clear MBBS language followed by precise terminology. Never show page numbers. Keep answers concise unless depth is requested. "
-        "This is educational content, not personal medical advice."
+        "You are MedBot, MedQ's full AI medical tutor for an MBBS student "
+        "preparing for AMC CAT MCQ, FMGE and NEET-PG. You are NOT limited to "
+        "the uploaded textbook library. Answer using strong general medical "
+        "knowledge and clinical reasoning. When MedQ textbook excerpts are "
+        "provided, use them as useful supporting context and reconcile them "
+        "with current standard medical knowledge; never invent a quotation or "
+        "claim a book says something it does not say. For AMC, emphasize "
+        "clinical vignettes, safety, next-best-step, investigation and "
+        "management reasoning. For FMGE/NEET-PG, include high-yield facts, "
+        "clinical application, pathology, pharmacology, investigations and "
+        "treatment when relevant. Explain difficult concepts in simple language "
+        "first, then precise medical terminology. For MCQs, explain why the "
+        "best answer wins and why important distractors lose. You may create "
+        "mnemonics, tables, mini-quizzes, differential diagnoses, revision "
+        "plans and exam-style questions when asked. Do not mention page numbers. "
+        "Do not force a textbook citation into every answer. Keep answers concise "
+        "unless the student asks for depth. This is educational information, not "
+        "personal medical care."
     )
 
-    user_prompt = (
-        f"Student question:\n{message}\n\n"
-    )
+    messages = [{"role": "system", "content": system_prompt}]
 
-    if question_context:
-        user_prompt += (
-            f"{question_context}\n"
-        )
-
-    user_prompt += (
-        "Relevant MedQ textbook excerpts:\n\n"
-        f"{context_text}"
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt
-        }
-    ]
-
-    # Keep only a small amount of recent chat history.
     if request.conversation:
-        for item in request.conversation[-4:]:
-            role = (
-                item.role
-                or ""
-            ).lower()
-
-            content = (
-                item.content
-                or ""
-            ).strip()
-
-            if (
-                role in ["user", "assistant"]
-                and content
-            ):
+        for item in request.conversation[-8:]:
+            role = (item.role or "").lower()
+            content = (item.content or "").strip()
+            if role in ["user", "assistant"] and content:
                 messages.append({
                     "role": role,
-                    "content": content[:2000]
+                    "content": content[:3000],
                 })
 
-    messages.append({
-        "role": "user",
-        "content": user_prompt
-    })
+    user_prompt = f"Student question:\n{message}\n"
+    if question_context:
+        user_prompt += f"\n{question_context}\n"
 
-    answer, used_model = call_gemini_medbot(
-        messages
-    )
+    if context_sections:
+        user_prompt += (
+            "\nOptional MedQ library references. Use them when helpful, but do "
+            "not restrict the answer to them:\n\n"
+            + "\n\n---\n\n".join(context_sections)
+        )
+    else:
+        user_prompt += (
+            "\nNo relevant MedQ textbook excerpt was retrieved. Answer normally "
+            "from your medical knowledge."
+        )
+
+    messages.append({"role": "user", "content": user_prompt})
+    answer, used_model = call_gemini_medbot(messages)
 
     return {
         "ok": True,
         "answer": answer,
         "sources": source_items,
-        "grounded": True,
+        "grounded": bool(source_items),
+        "knowledge_mode": "ai_plus_library" if source_items else "ai",
         "model": used_model,
     }
-
 
 
 # ---------------------------------------------------------
