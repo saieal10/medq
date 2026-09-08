@@ -80,6 +80,251 @@ const FMGE_SUBJECTS = [
 ]
 
 
+// Fixed curriculum hierarchy. This is intentionally independent of uploaded books.
+// Books ground the AI when useful; the curriculum controls what the student practises.
+const CURRICULUM = {
+  amc: {
+    'Adult Health — Medicine': {
+      'Cardiology': ['Ischaemic heart disease', 'Heart failure', 'Arrhythmias', 'Valvular disease', 'Hypertension', 'Cardiomyopathy', 'Pericardial disease', 'Endocarditis', 'Syncope', 'Adult congenital heart disease'],
+      'Respiratory Medicine': ['Asthma', 'COPD', 'Pneumonia', 'Pulmonary embolism', 'Pleural disease', 'Interstitial lung disease', 'Lung cancer', 'Respiratory failure', 'Sleep apnoea'],
+      'Gastroenterology & Hepatology': ['Upper GI disorders', 'Lower GI disorders', 'Inflammatory bowel disease', 'GI bleeding', 'Liver disease', 'Viral hepatitis', 'Pancreatic disease', 'Biliary disease', 'Malabsorption'],
+      'Endocrinology': ['Diabetes mellitus', 'Thyroid disease', 'Adrenal disease', 'Pituitary disease', 'Calcium & bone metabolism', 'Obesity & metabolic syndrome'],
+      'Nephrology': ['Acute kidney injury', 'Chronic kidney disease', 'Glomerular disease', 'Nephrotic syndrome', 'Electrolyte disorders', 'Acid-base disorders', 'Dialysis', 'Renal hypertension'],
+      'Neurology': ['Stroke & TIA', 'Seizures', 'Headache', 'Movement disorders', 'Dementia', 'Multiple sclerosis', 'Neuromuscular disease', 'Peripheral neuropathy', 'CNS infection'],
+      'Haematology & Oncology': ['Anaemia', 'Bleeding & thrombosis', 'Leukaemia', 'Lymphoma', 'Myeloma', 'Transfusion medicine', 'Oncological emergencies'],
+      'Infectious Diseases': ['Sepsis', 'Fever of unknown origin', 'HIV', 'Tuberculosis', 'Common bacterial infections', 'Viral infections', 'Antimicrobial therapy', 'Travel infections'],
+      'Rheumatology': ['Rheumatoid arthritis', 'SLE', 'Spondyloarthropathies', 'Gout', 'Vasculitis', 'Connective tissue disease'],
+      'Dermatology': ['Eczema & dermatitis', 'Psoriasis', 'Skin infection', 'Skin cancer', 'Drug eruptions', 'Blistering disorders']
+    },
+    'Adult Health — Surgery': {
+      'General Surgery': ['Acute abdomen', 'Appendicitis', 'Bowel obstruction', 'Perforation', 'Hernias', 'Surgical infections', 'Wound care'],
+      'Trauma': ['Primary survey', 'Head injury', 'Chest trauma', 'Abdominal trauma', 'Pelvic trauma', 'Shock', 'Burns'],
+      'Orthopaedic Surgery': ['Fracture management', 'Dislocations', 'Open fractures', 'Compartment syndrome', 'Septic arthritis', 'Cauda equina syndrome'],
+      'Vascular Surgery': ['Acute limb ischaemia', 'Peripheral arterial disease', 'Aortic aneurysm', 'DVT', 'Venous disease'],
+      'Urology': ['Urinary retention', 'Renal colic', 'Haematuria', 'UTI in surgical practice', 'Testicular torsion', 'Prostate disease'],
+      'Breast Surgery': ['Breast lump', 'Breast cancer', 'Mastitis & abscess'],
+      'Perioperative Care': ['Preoperative assessment', 'Postoperative complications', 'Fluids & electrolytes', 'Analgesia', 'VTE prophylaxis']
+    },
+    "Women's Health / Obstetrics & Gynaecology": {
+      'Antenatal Care': ['Routine antenatal care', 'Screening', 'Maternal medicine', 'Fetal assessment'],
+      'Early Pregnancy': ['Ectopic pregnancy', 'Miscarriage', 'Hyperemesis', 'Gestational trophoblastic disease'],
+      'Pregnancy Complications': ['Hypertensive disorders', 'Gestational diabetes', 'Antepartum haemorrhage', 'Preterm labour', 'PROM', 'Fetal growth restriction'],
+      'Labour & Delivery': ['Normal labour', 'Induction', 'Malpresentation', 'Operative delivery', 'Postpartum haemorrhage', 'Shoulder dystocia'],
+      'Postnatal Care': ['Puerperium', 'Breastfeeding', 'Postpartum infection', 'Postnatal mental health'],
+      'Gynaecology': ['Abnormal uterine bleeding', 'Amenorrhoea', 'Endometriosis', 'Fibroids', 'PCOS', 'Pelvic inflammatory disease', 'Menopause'],
+      'Gynaecological Oncology': ['Cervical cancer', 'Endometrial cancer', 'Ovarian cancer', 'Vulval disease'],
+      'Contraception & Sexual Health': ['Contraceptive choice', 'Emergency contraception', 'STIs', 'Infertility']
+    },
+    'Child Health / Paediatrics': {
+      'Growth & Development': ['Developmental milestones', 'Growth assessment', 'Developmental delay', 'Adolescent health'],
+      'Neonatology': ['Neonatal resuscitation', 'Jaundice', 'Prematurity', 'Neonatal sepsis', 'Feeding problems'],
+      'Paediatric Emergencies': ['Respiratory distress', 'Seizures', 'Dehydration', 'Shock', 'Anaphylaxis'],
+      'Infectious Disease & Immunisation': ['Childhood infections', 'Vaccination', 'Fever in children', 'Meningitis'],
+      'Respiratory': ['Asthma', 'Bronchiolitis', 'Croup', 'Pneumonia'],
+      'Cardiology': ['Congenital heart disease', 'Kawasaki disease', 'Heart failure'],
+      'Gastroenterology': ['Gastroenteritis', 'Constipation', 'Abdominal pain', 'Coeliac disease'],
+      'Neurology': ['Febrile seizures', 'Epilepsy', 'Cerebral palsy', 'Headache'],
+      'Child Protection': ['Non-accidental injury', 'Neglect', 'Mandatory reporting']
+    },
+    'Mental Health / Psychiatry': {
+      'Mood Disorders': ['Major depression', 'Bipolar disorder', 'Suicide risk assessment'],
+      'Anxiety & Trauma': ['Generalised anxiety', 'Panic disorder', 'OCD', 'PTSD'],
+      'Psychotic Disorders': ['Schizophrenia', 'First episode psychosis', 'Antipsychotic adverse effects'],
+      'Substance Use': ['Alcohol', 'Opioids', 'Stimulants', 'Withdrawal states'],
+      'Older Adult Psychiatry': ['Delirium', 'Dementia', 'Depression in older adults'],
+      'Eating & Personality Disorders': ['Anorexia nervosa', 'Bulimia nervosa', 'Personality disorders'],
+      'Psychiatric Emergencies': ['Agitation', 'Self-harm', 'Capacity', 'Involuntary treatment']
+    },
+    'Population Health & Ethics': {
+      'Australian Healthcare System': ['Medicare', 'PBS', 'Primary care', 'Referral pathways', 'Preventive health'],
+      'Medical Ethics': ['Consent', 'Capacity', 'Confidentiality', 'End-of-life care', 'Professional boundaries'],
+      'Legal & Mandatory Duties': ['Mandatory reporting', 'Child protection', 'Fitness to drive', 'Notifiable diseases'],
+      'Epidemiology & Biostatistics': ['Study designs', 'Bias', 'Screening tests', 'Risk measures', 'Evidence interpretation'],
+      'Public Health': ['Screening programs', 'Vaccination', 'Health promotion', 'Communicable disease control'],
+      'Communication & Cultural Safety': ['Breaking bad news', 'Shared decision-making', 'Interpreter use', 'Aboriginal and Torres Strait Islander health']
+    }
+  },
+  fmge: {
+    'Anatomy': {
+      'General Anatomy': ['Bones & joints', 'Muscles', 'Nerves', 'Blood vessels', 'Lymphatics'],
+      'Upper Limb': ['Brachial plexus', 'Shoulder', 'Arm & forearm', 'Hand'],
+      'Lower Limb': ['Lumbosacral plexus', 'Hip', 'Thigh & leg', 'Foot'],
+      'Thorax': ['Heart', 'Mediastinum', 'Lungs', 'Thoracic wall'],
+      'Abdomen & Pelvis': ['GI anatomy', 'Hepatobiliary anatomy', 'Retroperitoneum', 'Pelvic organs', 'Perineum'],
+      'Head & Neck': ['Cranial nerves', 'Orbit', 'Pharynx & larynx', 'Neck triangles'],
+      'Neuroanatomy': ['Brainstem', 'Spinal cord', 'Cerebral cortex', 'Basal ganglia', 'Cerebellum', 'Ventricles'],
+      'Embryology & Histology': ['General embryology', 'Organ development', 'Placenta', 'Epithelia', 'Tissues']
+    },
+    'Physiology': {
+      'General Physiology': ['Cell membrane', 'Transport', 'Body fluids', 'Acid-base'],
+      'Cardiovascular': ['Cardiac cycle', 'ECG', 'Blood pressure', 'Hemodynamics'],
+      'Respiratory': ['Lung volumes', 'Gas exchange', 'V/Q', 'Respiratory control'],
+      'Renal': ['GFR', 'Tubular function', 'Concentration', 'Acid-base'],
+      'Gastrointestinal': ['Motility', 'Secretions', 'Digestion & absorption'],
+      'Endocrine': ['Pituitary', 'Thyroid', 'Adrenal', 'Pancreas', 'Calcium'],
+      'Neurophysiology': ['Synapse', 'Reflexes', 'Sensory systems', 'Motor systems', 'Sleep'],
+      'Reproductive': ['Menstrual cycle', 'Pregnancy', 'Lactation', 'Male reproduction']
+    },
+    'Biochemistry': {
+      'Molecular Biology': ['DNA replication', 'Transcription', 'Translation', 'Gene regulation'],
+      'Enzymes': ['Kinetics', 'Inhibition', 'Clinical enzymes'],
+      'Carbohydrate Metabolism': ['Glycolysis', 'TCA cycle', 'Gluconeogenesis', 'Glycogen'],
+      'Lipid Metabolism': ['Fatty acid oxidation', 'Ketones', 'Cholesterol', 'Lipoproteins'],
+      'Protein & Amino Acids': ['Urea cycle', 'Amino acid disorders', 'Protein metabolism'],
+      'Vitamins & Minerals': ['Water-soluble vitamins', 'Fat-soluble vitamins', 'Trace elements'],
+      'Genetics': ['Inheritance', 'Chromosomal disorders', 'Molecular diagnostics'],
+      'Nutrition': ['Energy metabolism', 'Malnutrition', 'Obesity']
+    },
+    'Pathology': {
+      'General Pathology': ['Cell injury', 'Inflammation', 'Healing', 'Hemodynamic disorders', 'Neoplasia'],
+      'Haematology': ['Anaemias', 'Leukaemias', 'Lymphomas', 'Coagulation'],
+      'Cardiovascular': ['Atherosclerosis', 'IHD', 'Valvular disease', 'Cardiomyopathy'],
+      'Respiratory': ['COPD', 'Pneumonia', 'TB', 'Lung tumours'],
+      'Gastrointestinal': ['Gastritis', 'IBD', 'GI tumours'],
+      'Hepatobiliary': ['Hepatitis', 'Cirrhosis', 'Liver tumours'],
+      'Renal': ['Glomerular disease', 'Tubulointerstitial disease', 'Renal tumours'],
+      'Endocrine': ['Thyroid', 'Adrenal', 'Pituitary', 'Diabetes pathology'],
+      'Female & Male Genital': ['Cervix', 'Uterus', 'Ovary', 'Prostate', 'Testis']
+    },
+    'Pharmacology': {
+      'General Pharmacology': ['Pharmacokinetics', 'Pharmacodynamics', 'Adverse drug reactions'],
+      'Autonomic Nervous System': ['Cholinergic drugs', 'Adrenergic drugs'],
+      'Cardiovascular Drugs': ['Antihypertensives', 'Antianginals', 'Heart failure drugs', 'Antiarrhythmics'],
+      'CNS Drugs': ['Antiepileptics', 'Antipsychotics', 'Antidepressants', 'Anaesthetics', 'Opioids'],
+      'Antimicrobials': ['Antibiotics', 'Antitubercular drugs', 'Antivirals', 'Antifungals', 'Antiparasitics'],
+      'Endocrine Drugs': ['Diabetes drugs', 'Thyroid drugs', 'Steroids', 'Sex hormones'],
+      'Chemotherapy & Immunology': ['Anticancer drugs', 'Immunosuppressants'],
+      'Toxicology': ['Poisoning', 'Antidotes']
+    },
+    'Microbiology': {
+      'Immunology': ['Innate immunity', 'Adaptive immunity', 'Hypersensitivity', 'Vaccines'],
+      'Bacteriology': ['Gram-positive bacteria', 'Gram-negative bacteria', 'Mycobacteria', 'Spirochetes'],
+      'Virology': ['DNA viruses', 'RNA viruses', 'HIV', 'Hepatitis viruses'],
+      'Mycology': ['Superficial fungi', 'Systemic fungi', 'Opportunistic fungi'],
+      'Parasitology': ['Protozoa', 'Helminths'],
+      'Applied Microbiology': ['Sterilisation', 'Culture', 'Antimicrobial resistance', 'Hospital infection']
+    },
+    'Forensic Medicine': {
+      'Forensic Identification': ['Age', 'Sex', 'Stature', 'DNA & fingerprints'],
+      'Thanatology': ['Death', 'Postmortem changes', 'Time since death'],
+      'Injuries': ['Blunt injury', 'Sharp injury', 'Firearms', 'Burns'],
+      'Asphyxial Deaths': ['Hanging', 'Strangulation', 'Drowning'],
+      'Toxicology': ['Alcohol', 'Pesticides', 'Corrosives', 'Common poisons'],
+      'Sexual & Medicolegal Issues': ['Sexual offences', 'Consent', 'Medical negligence', 'MTP & law']
+    },
+    'Community Medicine (PSM)': {
+      'Epidemiology': ['Study designs', 'Bias', 'Association', 'Outbreak investigation'],
+      'Biostatistics': ['Data', 'Central tendency', 'Tests of significance', 'Screening tests'],
+      'Communicable Diseases': ['TB', 'HIV', 'Malaria', 'Vector-borne disease', 'Vaccine-preventable disease'],
+      'Non-communicable Diseases': ['Hypertension', 'Diabetes', 'Cancer', 'Screening'],
+      'National Health Programs': ['Maternal-child programs', 'TB program', 'HIV program', 'Immunisation'],
+      'Nutrition': ['Nutritional assessment', 'Deficiencies', 'Programs'],
+      'Environment & Occupational Health': ['Water', 'Air', 'Waste', 'Occupational diseases'],
+      'Demography & Health Management': ['Vital statistics', 'Population', 'Health indicators', 'Health planning']
+    },
+    'Medicine': {
+      'Cardiology': ['Ischaemic heart disease', 'Heart failure', 'Arrhythmias', 'Valvular heart disease', 'Hypertension', 'Cardiomyopathy', 'Pericardial disease'],
+      'Respiratory Medicine': ['Asthma', 'COPD', 'Pneumonia', 'Tuberculosis', 'Pleural disease', 'Interstitial lung disease', 'Pulmonary embolism'],
+      'Gastroenterology': ['Peptic ulcer disease', 'GI bleeding', 'IBD', 'Malabsorption', 'Pancreatic disease'],
+      'Hepatology': ['Hepatitis', 'Cirrhosis', 'Portal hypertension', 'Liver failure'],
+      'Endocrinology': ['Diabetes', 'Thyroid', 'Adrenal', 'Pituitary', 'Calcium disorders'],
+      'Nephrology': ['AKI', 'CKD', 'Glomerular disease', 'Electrolytes', 'Acid-base'],
+      'Neurology': ['Stroke', 'Epilepsy', 'Movement disorders', 'Neuropathy', 'Demyelination'],
+      'Haematology': ['Anaemia', 'Leukaemia', 'Lymphoma', 'Coagulation'],
+      'Rheumatology': ['RA', 'SLE', 'Spondyloarthropathy', 'Vasculitis', 'Gout'],
+      'Infectious Diseases': ['Sepsis', 'HIV', 'Fever', 'Common infections']
+    },
+    'Surgery': {
+      'General Surgery': ['Shock', 'Wounds', 'Surgical infections', 'Nutrition', 'Hernias'],
+      'Gastrointestinal Surgery': ['Oesophagus', 'Stomach', 'Small bowel', 'Colon', 'Appendix'],
+      'Hepatobiliary & Pancreas': ['Gallbladder', 'Bile duct', 'Liver', 'Pancreas'],
+      'Breast': ['Benign breast disease', 'Breast cancer'],
+      'Thyroid & Endocrine Surgery': ['Thyroid', 'Parathyroid', 'Adrenal'],
+      'Urology': ['Stone disease', 'Prostate', 'Bladder', 'Kidney', 'Testis'],
+      'Vascular Surgery': ['PAD', 'Aneurysm', 'Venous disease'],
+      'Trauma': ['ATLS', 'Head injury', 'Chest trauma', 'Abdominal trauma', 'Burns']
+    },
+    "Obstetrics & Gynaecology": {
+      'Obstetrics': ['Antenatal care', 'Normal labour', 'Hypertensive disorders', 'Diabetes in pregnancy', 'APH', 'PPH', 'Preterm labour', 'Malpresentation'],
+      'Early Pregnancy': ['Ectopic pregnancy', 'Abortion', 'Molar pregnancy'],
+      'Gynaecology': ['AUB', 'Amenorrhoea', 'Fibroid', 'Endometriosis', 'PCOS', 'PID'],
+      'Gynaecological Oncology': ['Cervix', 'Endometrium', 'Ovary'],
+      'Infertility & Contraception': ['Infertility', 'Contraception', 'Emergency contraception']
+    },
+    'Pediatrics': {
+      'Growth & Development': ['Milestones', 'Growth charts', 'Developmental delay'],
+      'Neonatology': ['Resuscitation', 'Jaundice', 'Prematurity', 'Sepsis'],
+      'Nutrition': ['Breastfeeding', 'Malnutrition', 'Micronutrients'],
+      'Infectious Diseases': ['Vaccination', 'Common infections', 'Meningitis'],
+      'Respiratory': ['Asthma', 'Bronchiolitis', 'Pneumonia'],
+      'Cardiology': ['Congenital heart disease', 'Rheumatic fever'],
+      'Gastroenterology': ['Diarrhoea', 'Dehydration', 'Malabsorption'],
+      'Neurology': ['Seizures', 'Cerebral palsy', 'Developmental disorders']
+    },
+    'Orthopedics': {
+      'Trauma': ['Fracture healing', 'Upper limb fractures', 'Lower limb fractures', 'Dislocations', 'Open fractures'],
+      'Spine': ['Disc disease', 'Spinal trauma', 'Scoliosis', 'TB spine'],
+      'Bone & Joint Infection': ['Osteomyelitis', 'Septic arthritis'],
+      'Arthritis': ['Osteoarthritis', 'Inflammatory arthritis'],
+      'Bone Tumours': ['Benign tumours', 'Malignant tumours'],
+      'Paediatric Orthopedics': ['DDH', 'Clubfoot', 'Perthes disease']
+    },
+    'ENT': {
+      'Ear': ['Otitis', 'Hearing loss', 'Vertigo', 'Tympanic membrane', 'Mastoid'],
+      'Nose & Sinus': ['Epistaxis', 'Rhinitis', 'Sinusitis', 'Nasal polyps'],
+      'Throat & Larynx': ['Tonsil', 'Pharynx', 'Larynx', 'Voice disorders'],
+      'Head & Neck': ['Neck swelling', 'Salivary glands', 'Head-neck cancers'],
+      'ENT Emergencies': ['Airway obstruction', 'Foreign body', 'Severe epistaxis']
+    },
+    'Ophthalmology': {
+      'Optics & Refraction': ['Refractive errors', 'Accommodation'],
+      'Cornea & Conjunctiva': ['Conjunctivitis', 'Keratitis', 'Corneal ulcer'],
+      'Lens': ['Cataract', 'Lens disorders'],
+      'Glaucoma': ['Open-angle glaucoma', 'Angle-closure glaucoma'],
+      'Retina': ['Diabetic retinopathy', 'Retinal detachment', 'Macular disease'],
+      'Uvea': ['Uveitis'],
+      'Neuro-ophthalmology': ['Optic neuritis', 'Papilloedema', 'Visual pathways'],
+      'Ocular Emergencies': ['Chemical injury', 'Acute red eye', 'Trauma']
+    },
+    'Dermatology': {
+      'Papulosquamous Disorders': ['Psoriasis', 'Lichen planus'],
+      'Eczematous Disorders': ['Atopic dermatitis', 'Contact dermatitis'],
+      'Infections': ['Bacterial', 'Viral', 'Fungal', 'Parasitic'],
+      'Vesiculobullous Disorders': ['Pemphigus', 'Bullous pemphigoid'],
+      'Pigmentary Disorders': ['Vitiligo', 'Melasma'],
+      'Skin Tumours': ['Melanoma', 'BCC', 'SCC'],
+      'STIs & Leprosy': ['Syphilis', 'Genital ulcers', 'Leprosy']
+    },
+    'Psychiatry': {
+      'Mood Disorders': ['Depression', 'Bipolar disorder', 'Suicide'],
+      'Psychotic Disorders': ['Schizophrenia', 'Acute psychosis'],
+      'Anxiety Disorders': ['GAD', 'Panic', 'OCD', 'PTSD'],
+      'Substance Use': ['Alcohol', 'Opioids', 'Other substances'],
+      'Child Psychiatry': ['ADHD', 'Autism', 'Intellectual disability'],
+      'Organic Psychiatry': ['Delirium', 'Dementia'],
+      'Psychopharmacology': ['Antidepressants', 'Antipsychotics', 'Mood stabilisers']
+    },
+    'Radiology': {
+      'X-ray Basics': ['Chest X-ray', 'Abdominal X-ray', 'Bone X-ray'],
+      'CT': ['Head CT', 'Chest CT', 'Abdominal CT'],
+      'MRI': ['Brain MRI', 'Spine MRI', 'Musculoskeletal MRI'],
+      'Ultrasound': ['Abdominal ultrasound', 'Obstetric ultrasound', 'Doppler'],
+      'Contrast & Safety': ['Contrast reactions', 'Radiation safety'],
+      'Interventional Radiology': ['Biopsy', 'Drainage', 'Embolisation']
+    },
+    'Anaesthesiology': {
+      'Preoperative Assessment': ['ASA grading', 'Airway assessment', 'Fasting', 'Risk evaluation'],
+      'General Anaesthesia': ['Induction', 'Maintenance', 'Emergence'],
+      'Airway Management': ['Bag-mask ventilation', 'Intubation', 'Difficult airway'],
+      'Regional Anaesthesia': ['Spinal', 'Epidural', 'Nerve blocks'],
+      'Anaesthetic Drugs': ['IV agents', 'Inhalational agents', 'Muscle relaxants'],
+      'Monitoring & Complications': ['Monitoring', 'Malignant hyperthermia', 'PONV', 'Awareness'],
+      'Pain & Critical Care': ['Postoperative pain', 'Shock', 'Ventilation']
+    }
+  }
+}
+
+
 function formatTime(seconds) {
   const safeSeconds = Math.max(
     0,
@@ -819,108 +1064,25 @@ export default function Practice({
 
 
   const chapters = useMemo(() => {
-    // Professional hierarchy: chapters only belong to one selected book.
-    // Never mix Harrison, Gastroenterology, etc. in the same chapter menu.
-    if (bookId === 'all') {
-      return []
-    }
-
-    const firstChunkByChapter = new Map()
-
-    bookChunks
-      .filter((chunk) => chunk.book_id === bookId)
-      .forEach((chunk) => {
-        const cleaned = cleanFilterLabel(
-          chunk.chapter,
-          'chapter'
-        )
-
-        if (!cleaned) return
-
-        const key = cleaned.toLowerCase()
-        const index = Number(chunk.chunk_index) || 0
-
-        if (
-          !firstChunkByChapter.has(key) ||
-          index < firstChunkByChapter.get(key).index
-        ) {
-          firstChunkByChapter.set(key, {
-            label: cleaned,
-            index
-          })
-        }
-      })
-
-    // Fallback for old/small books whose chunks do not yet have clean chapters.
-    baseFilteredQuestions
-      .filter((question) => question.book_id === bookId)
-      .forEach((question) => {
-        const cleaned = cleanFilterLabel(
-          question.chapter,
-          'chapter'
-        )
-
-        if (!cleaned) return
-
-        const key = cleaned.toLowerCase()
-        if (!firstChunkByChapter.has(key)) {
-          firstChunkByChapter.set(key, {
-            label: cleaned,
-            index: 999999
-          })
-        }
-      })
-
-    return [...firstChunkByChapter.values()]
-      .sort((a, b) => {
-        if (a.index !== b.index) {
-          return a.index - b.index
-        }
-        return a.label.localeCompare(b.label)
-      })
-      .map((item) => item.label)
-  }, [
-    bookChunks,
-    bookId,
-    baseFilteredQuestions
-  ])
+    if (subject === 'all') return []
+    const examKey = examMode === 'amc' ? 'amc' : 'fmge'
+    return Object.keys(CURRICULUM?.[examKey]?.[subject] || {})
+  }, [examMode, subject])
 
 
-  const chapterFilteredQuestions =
-    useMemo(() => {
-      if (chapter === 'all') {
-        return baseFilteredQuestions
-      }
-
-      return baseFilteredQuestions.filter(
-        (question) =>
-          question.chapter === chapter
-      )
-    }, [
-      baseFilteredQuestions,
-      chapter
-    ])
+  const chapterFilteredQuestions = useMemo(() => {
+    if (chapter === 'all') return baseFilteredQuestions
+    return baseFilteredQuestions.filter(
+      (question) => question.chapter === chapter
+    )
+  }, [baseFilteredQuestions, chapter])
 
 
   const topics = useMemo(() => {
-    if (
-      bookId === 'all' ||
-      chapter === 'all'
-    ) {
-      return []
-    }
-
-    return uniqueCleanLabels(
-      chapterFilteredQuestions
-        .filter((question) => question.book_id === bookId)
-        .map((question) => question.topic),
-      'topic'
-    )
-  }, [
-    bookId,
-    chapter,
-    chapterFilteredQuestions
-  ])
+    if (subject === 'all' || chapter === 'all') return []
+    const examKey = examMode === 'amc' ? 'amc' : 'fmge'
+    return CURRICULUM?.[examKey]?.[subject]?.[chapter] || []
+  }, [examMode, subject, chapter])
 
 
   const finalFilteredQuestions =
@@ -1210,6 +1372,8 @@ export default function Practice({
           book_id: null,
           chapter: '__AUTO__',
           subject: subject === 'all' ? '__ALL__' : subject,
+          topic: chapter === 'all' ? '__ALL__' : chapter,
+          subtopic: topic === 'all' ? '__ALL__' : topic,
           difficulty,
           exam_mode: examMode,
           count: generationBatch
@@ -1231,6 +1395,8 @@ export default function Practice({
           .order('created_at', { ascending: false })
 
         if (subject !== 'all') query = query.eq('subject', subject)
+        if (chapter !== 'all') query = query.eq('chapter', chapter)
+        if (topic !== 'all') query = query.eq('topic', topic)
         if (examMode === 'amc') query = query.in('exam_type', ['amc', 'AMC', 'both', 'BOTH'])
         if (examMode === 'fmge') query = query.in('exam_type', ['fmge', 'FMGE', 'both', 'BOTH'])
         if (difficulty !== 'all') query = query.eq('difficulty', difficulty)
@@ -2050,7 +2216,7 @@ export default function Practice({
                           key={item}
                           value={item}
                         >
-                          {item} ({questionCountForChapter(item)})
+                          {item}
                         </option>
 
                       )
@@ -2099,10 +2265,10 @@ export default function Practice({
                 </div>
 
 
-                <div className="practice-field" style={{ display: 'none' }}>
+                <div className="practice-field">
 
                   <label>
-                    Chapter
+                    Topic
                   </label>
 
                   <select
@@ -2116,7 +2282,7 @@ export default function Practice({
                   >
 
                     <option value="all">
-                      All chapters
+                      All topics
                     </option>
 
                     {chapters.map(
@@ -2137,10 +2303,10 @@ export default function Practice({
                 </div>
 
 
-                <div className="practice-field" style={{ display: 'none' }}>
+                <div className="practice-field">
 
                   <label>
-                    Topic
+                    Subtopic
                   </label>
 
                   <select
@@ -2154,7 +2320,7 @@ export default function Practice({
                   >
 
                     <option value="all">
-                      All topics
+                      All subtopics
                     </option>
 
                     {topics.map(
