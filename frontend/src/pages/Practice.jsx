@@ -2543,10 +2543,15 @@ export default function Practice({
                           <button
                             className="ask-medbot-button"
                             onClick={() =>
-                              navigate(
-                                `/medbot?question=${encodeURIComponent(
-                                  currentQuestion.id
-                                )}`
+                              window.dispatchEvent(
+                                new CustomEvent(
+                                  'medq:open-medbot',
+                                  {
+                                    detail: {
+                                      questionId: currentQuestion.id
+                                    }
+                                  }
+                                )
                               )
                             }
                           >
