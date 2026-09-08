@@ -48,6 +48,37 @@ const QUESTION_COUNT_OPTIONS = [
   100
 ]
 
+const AMC_SUBJECTS = [
+  'Adult Health — Medicine',
+  'Adult Health — Surgery',
+  "Women's Health / Obstetrics & Gynaecology",
+  'Child Health / Paediatrics',
+  'Mental Health / Psychiatry',
+  'Population Health & Ethics'
+]
+
+const FMGE_SUBJECTS = [
+  'Anatomy',
+  'Physiology',
+  'Biochemistry',
+  'Pathology',
+  'Pharmacology',
+  'Microbiology',
+  'Forensic Medicine',
+  'Community Medicine (PSM)',
+  'Medicine',
+  'Surgery',
+  "Obstetrics & Gynaecology",
+  'Pediatrics',
+  'Orthopedics',
+  'ENT',
+  'Ophthalmology',
+  'Dermatology',
+  'Psychiatry',
+  'Radiology',
+  'Anaesthesiology'
+]
+
 
 function formatTime(seconds) {
   const safeSeconds = Math.max(
@@ -380,6 +411,11 @@ export default function Practice({
     setBookmarkSavingId
   ] = useState(null)
 
+  const [
+    attemptedQuestionIds,
+    setAttemptedQuestionIds
+  ] = useState(new Set())
+
 
   // =======================================================
   // LOAD DATA
@@ -388,7 +424,25 @@ export default function Practice({
   useEffect(() => {
     loadPracticeData()
     loadBookmarks()
+    loadAttemptedQuestions()
   }, [])
+
+
+  async function loadAttemptedQuestions() {
+    const { data, error: attemptsError } = await supabase
+      .from('attempts')
+      .select('question_id')
+      .eq('user_id', session.user.id)
+
+    if (attemptsError) {
+      console.error('Unable to load previous attempts:', attemptsError.message)
+      return
+    }
+
+    setAttemptedQuestionIds(
+      new Set((data || []).map((row) => row.question_id).filter(Boolean))
+    )
+  }
 
 
   async function loadBookmarks() {
@@ -665,18 +719,10 @@ export default function Practice({
   // =======================================================
 
   const subjects = useMemo(() => {
-    return [
-      ...new Set(
-        questions
-          .map(
-            (question) =>
-              question.subject
-          )
-          .filter(Boolean)
-      )
-    ].sort()
-  }, [questions])
-
+    if (examMode === 'amc') return AMC_SUBJECTS
+    if (examMode === 'fmge') return FMGE_SUBJECTS
+    return FMGE_SUBJECTS
+  }, [examMode])
 
   const eligibleBooks = useMemo(() => {
     if (subject === 'all') {
@@ -895,9 +941,21 @@ export default function Practice({
     ])
 
 
+  const unseenFilteredQuestions = useMemo(() => {
+    return finalFilteredQuestions.filter(
+      (question) => !attemptedQuestionIds.has(question.id)
+    )
+  }, [finalFilteredQuestions, attemptedQuestionIds])
+
+
   // =======================================================
   // RESET DEPENDENT FILTERS
   // =======================================================
+
+  useEffect(() => {
+    setSubject('all')
+  }, [examMode])
+
 
   useEffect(() => {
     setBookId('all')
@@ -1123,25 +1181,23 @@ export default function Practice({
     setGenerationMessage('')
 
     try {
-      // If enough unseen/generated questions already exist, start instantly.
-      if (finalFilteredQuestions.length >= Math.min(requestedCount, 10)) {
-        await createPracticeSessionFromPool(finalFilteredQuestions)
+      // Always prefer questions this user has never attempted.
+      const currentUnseen = unseenFilteredQuestions
+
+      if (currentUnseen.length >= requestedCount) {
+        await createPracticeSessionFromPool(currentUnseen)
         return
       }
 
-      // Autopilot: user should not manage books, chapters or AI batches.
-      const candidateBooks = eligibleBooks.filter(
-        (book) => !subject || subject === 'all' || !book.subject || book.subject === subject
-      )
-      const sourceBook = candidateBooks[0]
-
-      if (!sourceBook) {
-        throw new Error('Upload and process a textbook for this subject first.')
-      }
+      const shortage = requestedCount - currentUnseen.length
+      const generationBatch =
+        shortage <= 10 ? 10 :
+        shortage <= 20 ? 20 :
+        shortage <= 50 ? 50 : 100
 
       setGeneratingQuestions(true)
       setGenerationMessage(
-        `MedQ is automatically building a ${examMode.toUpperCase()} session from your textbook library…`
+        `MedQ found ${currentUnseen.length} unseen question${currentUnseen.length === 1 ? '' : 's'}. AI is creating the rest automatically…`
       )
 
       const response = await fetch(`${API_URL}/api/questions/generate`, {
@@ -1151,19 +1207,21 @@ export default function Practice({
           Authorization: `Bearer ${session.access_token}`
         },
         body: JSON.stringify({
-          book_id: sourceBook.id,
+          book_id: null,
           chapter: '__AUTO__',
+          subject: subject === 'all' ? '__ALL__' : subject,
+          difficulty,
           exam_mode: examMode,
-          count: requestedCount
+          count: generationBatch
         })
       })
 
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(data?.detail || 'MedQ could not start automatic question generation.')
+        throw new Error(data?.detail || 'MedQ could not start automatic AI generation.')
       }
 
-      // Poll quietly; once enough questions arrive, start the session automatically.
+      // Poll until this user has EXACTLY enough unseen questions for the requested session.
       for (let check = 0; check < 40; check += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 15000))
 
@@ -1180,9 +1238,17 @@ export default function Practice({
         const { data: fresh, error: freshError } = await query
         if (freshError) throw freshError
 
-        const freshPool = Array.isArray(fresh) ? fresh : []
-        if (freshPool.length >= Math.min(requestedCount, 10)) {
-          setQuestions(freshPool)
+        const freshPool = (Array.isArray(fresh) ? fresh : [])
+          .filter((question) => !attemptedQuestionIds.has(question.id))
+
+        if (freshPool.length >= requestedCount) {
+          setQuestions((current) => {
+            const merged = new Map()
+            ;[...freshPool, ...current].forEach((question) => {
+              if (question?.id) merged.set(question.id, question)
+            })
+            return [...merged.values()]
+          })
           setGenerationMessage('')
           setGeneratingQuestions(false)
           await createPracticeSessionFromPool(freshPool)
@@ -1190,7 +1256,7 @@ export default function Practice({
         }
       }
 
-      throw new Error('AI generation is taking longer than expected. Try Start Practice again shortly.')
+      throw new Error('AI generation is taking longer than expected. Your new questions will remain in the bank; try Start Practice again shortly.')
 
     } catch (startError) {
       console.error(startError)
@@ -1200,7 +1266,6 @@ export default function Practice({
       setGeneratingQuestions(false)
     }
   }
-
 
   // =======================================================
   // CURRENT QUESTION
@@ -1352,6 +1417,12 @@ export default function Practice({
         [question.id]: true
       })
     )
+
+    setAttemptedQuestionIds((previous) => {
+      const next = new Set(previous)
+      next.add(question.id)
+      return next
+    })
   }
 
 
@@ -1791,7 +1862,7 @@ export default function Practice({
 
                 <p>
                   Practice specifically for AMC,
-                  FMGE, or combine both patterns.
+                  FMGE/NEET-PG, or combine both patterns.
                 </p>
 
               </div>
@@ -1911,7 +1982,7 @@ export default function Practice({
                   </strong>
 
                   <small>
-                    AMC + FMGE
+                    AMC + FMGE/NEET-PG
                     together
                   </small>
 
@@ -2351,7 +2422,7 @@ export default function Practice({
 
                   <strong>
                     {
-                      finalFilteredQuestions
+                      unseenFilteredQuestions
                         .length
                     }
                   </strong>
@@ -2420,7 +2491,7 @@ export default function Practice({
                         examMode === 'amc'
                           ? 'AMC Practice'
                           : examMode === 'fmge'
-                            ? 'FMGE Practice'
+                            ? 'FMGE / NEET-PG Practice'
                             : 'Mixed Practice'
                       }
                     </span>
