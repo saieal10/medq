@@ -26,7 +26,7 @@ export default function MedBot({
       {
         role: 'assistant',
         content:
-          'Hi, I’m MedBot — your AI medical tutor. Ask me anything in medicine, AMC, FMGE or NEET-PG. I can also use your MedQ textbook library when it helps.'
+          'Hi, I’m MedBot — your AI medical tutor. Ask me anything in medicine, AMC, FMGE or NEET-PG. I answer directly with AI and can use your MedQ textbook library when you specifically ask for it.'
       }
     ])
 
@@ -75,174 +75,103 @@ export default function MedBot({
 
 
   async function sendMessage() {
-
-    const text =
-      input.trim()
-
-
-    if (
-      !text
-      || loading
-    ) {
-      return
-    }
-
+    const text = input.trim()
+    if (!text || loading) return
 
     setError('')
+    const userMessage = { role: 'user', content: text }
+    const previousConversation = messages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .slice(-6)
+      .map((message) => ({ role: message.role, content: message.content }))
 
-
-    const userMessage = {
-      role: 'user',
-      content: text
-    }
-
-
-    const previousConversation =
-      messages
-        .filter(
-          message =>
-            message.role === 'user'
-            || message.role === 'assistant'
-        )
-        .slice(-6)
-        .map(
-          message => ({
-            role: message.role,
-            content: message.content
-          })
-        )
-
-
-    setMessages(
-      current => [
-        ...current,
-        userMessage
-      ]
-    )
-
-
+    setMessages((current) => [
+      ...current,
+      userMessage,
+      { role: 'assistant', content: '', sources: [] }
+    ])
     setInput('')
-
     setLoading(true)
 
-
     try {
+      const accessToken = session?.access_token
+      if (!accessToken) throw new Error('Your login session has expired. Please sign in again.')
 
-      let accessToken =
-        session?.access_token
-
-
-      if (!accessToken) {
-
-        throw new Error(
-          'Your login session has expired. Please sign in again.'
-        )
-
-      }
-
-
-      const response =
-        await fetch(
-          `${API_URL}/api/medbot/chat`,
-          {
-            method: 'POST',
-
-            headers: {
-              'Content-Type':
-                'application/json',
-
-              Authorization:
-                `Bearer ${accessToken}`
-            },
-
-            body: JSON.stringify({
-              message: text,
-
-              book_id: null,
-
-              question_id: questionId || null,
-
-              conversation:
-                previousConversation
-            })
-          }
-        )
-
-
-      let data = null
-
-
-      try {
-
-        data =
-          await response.json()
-
-      } catch {
-
-        data = null
-
-      }
-
+      const response = await fetch(`${API_URL}/api/medbot/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          message: text,
+          book_id: null,
+          question_id: questionId || null,
+          conversation: previousConversation
+        })
+      })
 
       if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data?.detail || 'MedBot could not answer right now.')
+      }
+      if (!response.body) throw new Error('Streaming is unavailable in this browser.')
 
-        throw new Error(
-          data?.detail
-          || 'MedBot could not answer right now.'
-        )
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let serverError = ''
 
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
+
+        for (const event of events) {
+          const line = event.split('\n').find((item) => item.startsWith('data:'))
+          if (!line) continue
+          let payload = null
+          try { payload = JSON.parse(line.slice(5).trim()) } catch { continue }
+
+          if (payload.type === 'ready' && Array.isArray(payload.sources)) {
+            setMessages((current) => {
+              const next = [...current]
+              const last = next[next.length - 1]
+              if (last?.role === 'assistant') next[next.length - 1] = { ...last, sources: payload.sources }
+              return next
+            })
+          }
+
+          if (payload.type === 'delta' && payload.text) {
+            setMessages((current) => {
+              const next = [...current]
+              const last = next[next.length - 1]
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = { ...last, content: `${last.content || ''}${payload.text}` }
+              }
+              return next
+            })
+          }
+
+          if (payload.type === 'error') serverError = payload.message || 'MedBot could not answer.'
+        }
       }
 
-
-      const assistantMessage = {
-        role: 'assistant',
-
-        content:
-          data?.answer
-          || 'I could not generate an answer.',
-
-        sources:
-          Array.isArray(
-            data?.sources
-          )
-            ? data.sources
-            : [],
-
-        grounded:
-          data?.grounded
-      }
-
-
-      setMessages(
-        current => [
-          ...current,
-          assistantMessage
-        ]
-      )
-
-
+      if (serverError) throw new Error(serverError)
     } catch (err) {
-
-      console.error(
-        'MedBot error:',
-        err
-      )
-
-
-      setError(
-        err?.message
-        || 'Something went wrong.'
-      )
-
-
+      console.error('MedBot error:', err)
+      setMessages((current) => {
+        const next = [...current]
+        if (next[next.length - 1]?.role === 'assistant' && !next[next.length - 1].content) next.pop()
+        return next
+      })
+      setError(err?.message || 'Something went wrong.')
     } finally {
-
       setLoading(false)
-
     }
-
   }
-
 
   function handleKeyDown(event) {
 
@@ -309,7 +238,7 @@ export default function MedBot({
               </h1>
 
               <p>
-                Textbook-grounded AMC & FMGE assistant
+                Fast Gemini-powered medical tutor
               </p>
 
             </div>
