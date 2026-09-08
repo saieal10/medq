@@ -52,36 +52,80 @@ export default function Library({ session }) {
     loadBooks()
   }, [])
 
-  async function loadBooks() {
-    setLoading(true)
+  useEffect(() => {
+    const hasActiveBook = books.some((book) => {
+      const stage = (
+        book.processing_stage ||
+        book.status ||
+        ''
+      ).toLowerCase()
+
+      return ![
+        'ready',
+        'failed'
+      ].includes(stage)
+    })
+
+    if (!hasActiveBook) {
+      return undefined
+    }
+
+    const timer = window.setInterval(() => {
+      loadBooks({ silent: true })
+    }, 10000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [books])
+
+  async function loadBooks({ silent = false } = {}) {
+    if (!silent) {
+      setLoading(true)
+    }
+
     setError('')
 
     try {
-      if (!API_URL) {
-        throw new Error(
-          'VITE_API_URL is missing from the frontend environment.'
-        )
+      const {
+        data,
+        error: booksError
+      } = await supabase
+        .from('books')
+        .select(`
+          id,
+          title,
+          subject,
+          file_size_bytes,
+          status,
+          processing_stage,
+          extraction_progress,
+          question_progress,
+          questions_generated,
+          processed_pages,
+          total_pages,
+          page_count,
+          error_message,
+          created_at
+        `)
+        .order('created_at', { ascending: false })
+
+      if (booksError) {
+        throw booksError
       }
 
-      const response = await fetch(
-        `${API_URL}/api/books`
+      setBooks(data || [])
+
+    } catch (err) {
+      setError(
+        err.message ||
+        'Unable to load the MedQ library.'
       )
 
-      if (!response.ok) {
-        const result = await response.json().catch(() => ({}))
-
-        throw new Error(
-          result.detail || 'Unable to load the MedQ library.'
-        )
-      }
-
-      const result = await response.json()
-
-      setBooks(result.books || [])
-    } catch (err) {
-      setError(err.message)
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }
 
@@ -245,7 +289,7 @@ export default function Library({ session }) {
 
       const book = registerResult.book
 
-      setUploadStage('Preparing book for OCR and question extraction…')
+      setUploadStage('Starting textbook extraction and knowledge-base processing…')
 
       const processResponse = await fetch(
         `${API_URL}/api/books/${book.id}/process`,
@@ -261,7 +305,7 @@ export default function Library({ session }) {
       }
 
       setSuccess(
-        'PDF uploaded successfully. It is now waiting for OCR and automatic question extraction.'
+        'PDF uploaded successfully. MedQ is now extracting the textbook and building its knowledge base.'
       )
 
       setUploadStage('')
@@ -701,6 +745,7 @@ export default function Library({ session }) {
                 <BookRow
                   key={book.id}
                   book={book}
+                  onRefresh={() => loadBooks({ silent: true })}
                 />
 
               ))}
@@ -718,77 +763,319 @@ export default function Library({ session }) {
 }
 
 
-function BookRow({ book }) {
+function BookRow({ book, onRefresh }) {
+  const progress = getBookProgress(book)
+  const statusInfo = getStatusInfo(book)
+
   return (
     <div
       className="panel"
       style={{
         padding: '18px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: '20px',
-        alignItems: 'center'
+        display: 'grid',
+        gap: '14px'
       }}
     >
 
       <div
         style={{
           display: 'flex',
-          gap: '14px',
+          justifyContent: 'space-between',
+          gap: '20px',
           alignItems: 'center'
         }}
       >
 
-        <FileText size={28} />
+        <div
+          style={{
+            display: 'flex',
+            gap: '14px',
+            alignItems: 'center',
+            minWidth: 0
+          }}
+        >
 
-        <div>
+          <FileText size={28} />
 
-          <strong>
-            {book.title}
-          </strong>
+          <div style={{ minWidth: 0 }}>
 
-          <div
-            style={{
-              marginTop: '5px'
-            }}
-          >
+            <strong>
+              {book.title}
+            </strong>
 
-            <small>
-              {book.subject || 'General'}
-            </small>
-
-            {book.file_size_bytes && (
+            <div
+              style={{
+                marginTop: '5px'
+              }}
+            >
               <small>
-                {' • '}
-                {formatBytes(book.file_size_bytes)}
+                {book.subject || 'General'}
               </small>
-            )}
+
+              {book.file_size_bytes && (
+                <small>
+                  {' • '}
+                  {formatBytes(book.file_size_bytes)}
+                </small>
+              )}
+            </div>
 
           </div>
 
         </div>
 
+        <StatusBadge book={book} />
+
       </div>
 
-      <StatusBadge status={book.status} />
+      {statusInfo.active && (
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '7px'
+            }}
+          >
+            <small>
+              {statusInfo.detail}
+            </small>
+
+            {progress !== null && (
+              <small>
+                {progress}%
+              </small>
+            )}
+          </div>
+
+          {progress !== null && (
+            <div
+              style={{
+                height: '7px',
+                borderRadius: '999px',
+                overflow: 'hidden',
+                background: 'rgba(255,255,255,.08)'
+              }}
+            >
+              <div
+                style={{
+                  width: `${progress}%`,
+                  height: '100%',
+                  borderRadius: '999px',
+                  background: 'currentColor',
+                  opacity: 0.75,
+                  transition: 'width .3s ease'
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {book.status === 'failed' && book.error_message && (
+        <small>
+          {book.error_message}
+        </small>
+      )}
+
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '14px'
+        }}
+      >
+        {getTotalPages(book) > 0 && (
+          <small>
+            {getProcessedPages(book).toLocaleString()}
+            {' / '}
+            {getTotalPages(book).toLocaleString()}
+            {' pages processed'}
+          </small>
+        )}
+
+        {Number(book.questions_generated) > 0 && (
+          <small>
+            {Number(book.questions_generated).toLocaleString()}
+            {' starter questions'}
+          </small>
+        )}
+
+        {statusInfo.active && (
+          <button
+            type="button"
+            className="btn"
+            onClick={onRefresh}
+            style={{
+              padding: '4px 9px',
+              minHeight: 'auto'
+            }}
+          >
+            Refresh
+          </button>
+        )}
+      </div>
 
     </div>
   )
 }
 
 
-function StatusBadge({ status }) {
-  const labels = {
-    uploaded: 'Uploaded',
-    processing: 'Processing',
-    ready: 'Ready',
-    failed: 'Failed'
-  }
+function StatusBadge({ book }) {
+  const info = getStatusInfo(book)
 
   return (
     <span className="user-chip">
-      {labels[status] || status || 'Unknown'}
+      {info.label}
     </span>
+  )
+}
+
+
+function getStatusInfo(book) {
+  const stage = (
+    book.processing_stage ||
+    book.status ||
+    ''
+  ).toLowerCase()
+
+  if (book.status === 'failed' || stage === 'failed') {
+    return {
+      label: 'Failed',
+      detail: 'Processing stopped',
+      active: false
+    }
+  }
+
+  if (
+    book.status === 'ready' &&
+    [
+      'ready',
+      'knowledge_ready'
+    ].includes(stage)
+  ) {
+    return {
+      label: 'Ready',
+      detail: 'Knowledge base ready',
+      active: false
+    }
+  }
+
+  const stages = {
+    uploaded: {
+      label: 'Uploaded',
+      detail: 'Waiting to start processing'
+    },
+    queued: {
+      label: 'Queued',
+      detail: 'Waiting for processing worker'
+    },
+    downloading: {
+      label: 'Downloading',
+      detail: 'Preparing the stored PDF'
+    },
+    extracting: {
+      label: 'Extracting',
+      detail: 'Reading the complete textbook'
+    },
+    building_knowledge_base: {
+      label: 'Building knowledge',
+      detail: 'Organising textbook content for MedBot and practice'
+    },
+    knowledge_ready: {
+      label: 'Knowledge ready',
+      detail: 'Textbook knowledge base is available'
+    },
+    generating_seed_questions: {
+      label: 'Generating questions',
+      detail: 'Creating a distributed starter question set'
+    },
+    processing: {
+      label: 'Processing',
+      detail: 'Processing textbook'
+    }
+  }
+
+  const info =
+    stages[stage] ||
+    stages[(book.status || '').toLowerCase()] ||
+    {
+      label: 'Processing',
+      detail: 'Processing textbook'
+    }
+
+  return {
+    ...info,
+    active: true
+  }
+}
+
+
+function getTotalPages(book) {
+  return Number(
+    book.total_pages ||
+    book.page_count ||
+    0
+  )
+}
+
+
+function getProcessedPages(book) {
+  return Number(
+    book.processed_pages ||
+    0
+  )
+}
+
+
+function getBookProgress(book) {
+  const stage = (
+    book.processing_stage ||
+    book.status ||
+    ''
+  ).toLowerCase()
+
+  if (
+    stage === 'extracting' ||
+    stage === 'downloading'
+  ) {
+    return clampPercent(
+      book.extraction_progress
+    )
+  }
+
+  if (
+    stage === 'building_knowledge_base' ||
+    stage === 'knowledge_ready'
+  ) {
+    return 100
+  }
+
+  if (stage === 'generating_seed_questions') {
+    return clampPercent(
+      book.question_progress
+    )
+  }
+
+  if (book.status === 'ready') {
+    return 100
+  }
+
+  return null
+}
+
+
+function clampPercent(value) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number)) {
+    return null
+  }
+
+  return Math.max(
+    0,
+    Math.min(100, Math.round(number))
   )
 }
 
