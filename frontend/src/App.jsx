@@ -15,6 +15,7 @@ import Library from './pages/Library'
 import MedBot from './pages/MedBot'
 import Mistakes from './pages/Mistakes'
 import Bookmarks from './pages/Bookmarks'
+import History from './pages/History'
 
 
 function ProtectedRoute({
@@ -170,6 +171,20 @@ export default function App() {
             session={session}
           >
             <Bookmarks
+              session={session}
+            />
+          </ProtectedRoute>
+        }
+      />
+
+
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute
+            session={session}
+          >
+            <History
               session={session}
             />
           </ProtectedRoute>
