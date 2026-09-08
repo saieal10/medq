@@ -44,7 +44,7 @@ export default function MedBotFloat({ session }) {
       {
         role: 'assistant',
         content:
-          'Hi, I’m MedBot. Ask me from your processed medical textbooks, or use me while practising AMC/FMGE questions.'
+          'Hi, I’m MedBot — your AI medical tutor. Ask me anything in medicine, AMC, FMGE or NEET-PG. I can use your MedQ library when it is helpful.'
       }
     ]
   })
@@ -168,7 +168,7 @@ export default function MedBotFloat({ session }) {
       {
         role: 'assistant',
         content:
-          'Chat cleared. Ask me anything from your processed MedQ textbooks.'
+          'Chat cleared. Ask me any medical, AMC, FMGE or NEET-PG question.'
       }
     ])
     setQuestionId(null)
@@ -196,7 +196,7 @@ export default function MedBotFloat({ session }) {
               <div>
                 <strong style={styles.title}>MedBot</strong>
                 <small style={styles.subtitle}>
-                  Textbook-grounded AMC + FMGE AI
+                  AI medical tutor • AMC + FMGE + NEET-PG
                 </small>
               </div>
             </div>
@@ -270,7 +270,7 @@ export default function MedBotFloat({ session }) {
               <div style={styles.assistantRow}>
                 <div style={styles.thinking}>
                   <Loader2 size={16} />
-                  MedBot is reasoning from your library…
+                  MedBot is thinking…
                 </div>
               </div>
             )}
@@ -315,7 +315,7 @@ export default function MedBotFloat({ session }) {
             </button>
 
             <span>
-              Uses processed MedQ textbooks
+              Gemini AI • library-aware
             </span>
           </footer>
         </section>
