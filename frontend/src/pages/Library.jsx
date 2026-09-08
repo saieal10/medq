@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  Bookmark,
   BookOpen,
   Brain,
   CheckCircle2,
@@ -309,10 +310,18 @@ export default function Library({ session }) {
             Practice
           </button>
 
-          <button>
+          <button
+            onClick={() => navigate('/mistakes')}
+          >
             <RotateCcw size={18} />
             Mistakes
-            <span className="soon">soon</span>
+          </button>
+
+          <button
+            onClick={() => navigate('/bookmarks')}
+          >
+            <Bookmark size={18} />
+            Bookmarks
           </button>
 
           <button className="side-active">
