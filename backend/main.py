@@ -70,12 +70,9 @@ GITHUB_BRANCH = os.getenv(
 )
 
 
-# OpenRouter / MedBot
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv(
-    "OPENROUTER_MODEL",
-    "openrouter/free"
-)
+# Gemini / MedBot
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
 
 # MedBot performance controls. These defaults keep the free-tier request
 # small and responsive while preserving textbook grounding.
@@ -500,146 +497,102 @@ def load_book_titles(
     return titles
 
 
-def call_openrouter_medbot(
-    messages: List[Dict[str, str]]
-):
+def call_gemini_medbot(messages: List[Dict[str, str]]):
 
-    if not OPENROUTER_API_KEY:
+    if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=500,
-            detail=(
-                "OPENROUTER_API_KEY is not "
-                "configured on the backend."
-            )
+            detail="GEMINI_API_KEY is not configured on the backend."
         )
 
-    url = (
-        "https://openrouter.ai/api/v1/"
-        "chat/completions"
-    )
+    # Gemini generateContent accepts the full conversation. System messages
+    # are supplied through systemInstruction; assistant becomes model.
+    system_text = ""
+    contents = []
 
-    # openrouter/free already routes across the currently available free
-    # model pool. Keeping one request avoids burning additional free-tier
-    # requests with retry loops when the account itself is rate-limited.
+    for item in messages:
+        role = (item.get("role") or "").lower()
+        text = (item.get("content") or "").strip()
+        if not text:
+            continue
+        if role == "system":
+            system_text += ("\n" if system_text else "") + text
+            continue
+        contents.append({
+            "role": "model" if role == "assistant" else "user",
+            "parts": [{"text": text}]
+        })
+
     payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": MEDBOT_MAX_TOKENS,
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": MEDBOT_MAX_TOKENS,
+        },
     }
+
+    if system_text:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_text}]
+        }
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent"
+    )
 
     request = urllib.request.Request(
         url,
-        data=json.dumps(
-            payload
-        ).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={
-            "Authorization": (
-                f"Bearer {OPENROUTER_API_KEY}"
-            ),
+            "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json",
-            "HTTP-Referer": (
-                "https://medq-practice.netlify.app"
-            ),
-            "X-Title": "MedQ MedBot",
             "User-Agent": "MedQ-Backend",
         }
     )
 
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=MEDBOT_AI_TIMEOUT
-        ) as response:
-            raw = response.read().decode(
-                "utf-8"
-            )
-
+        with urllib.request.urlopen(request, timeout=MEDBOT_AI_TIMEOUT) as response:
+            raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         try:
-            detail = exc.read().decode(
-                "utf-8"
-            )
+            detail = exc.read().decode("utf-8")
         except Exception:
             detail = str(exc)
-
-        print(
-            "OpenRouter MedBot error:",
-            detail
-        )
-
-        # 429 is a quota/rate-limit condition, not a broken MedQ backend.
-        # Do not automatically retry: failed free-tier attempts can consume
-        # request allowance and repeated retries make the UI feel slower.
+        print("Gemini MedBot error:", detail)
         if exc.code == 429:
             raise HTTPException(
                 status_code=429,
-                detail=(
-                    "MedBot's free AI allowance is temporarily "
-                    "rate-limited or has reached its OpenRouter "
-                    "free-tier quota. Please try again later or "
-                    "increase the OpenRouter allowance."
-                )
+                detail="MedBot's Gemini allowance is temporarily rate-limited. Please try again shortly."
             )
-
         raise HTTPException(
             status_code=502,
-            detail=(
-                "MedBot AI provider returned "
-                f"an error ({exc.code})."
-            )
+            detail=f"Gemini returned an error ({exc.code})."
         )
-
-    except TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                "MedBot's AI provider took too long to respond. "
-                "Please try again."
-            )
-        )
-
     except Exception as exc:
-        print(
-            "MedBot connection error:",
-            str(exc)
-        )
-
+        print("Gemini connection error:", str(exc))
         raise HTTPException(
             status_code=502,
-            detail=(
-                "MedBot could not contact the "
-                "AI provider."
-            )
+            detail="MedBot could not contact Gemini."
         )
 
     try:
         data = json.loads(raw)
-        answer = (
-            data["choices"][0]["message"]["content"]
+        parts = data["candidates"][0]["content"]["parts"]
+        answer = "\n".join(
+            part.get("text", "") for part in parts if part.get("text")
         ).strip()
-        used_model = (
-            data.get("model")
-            or OPENROUTER_MODEL
-        )
+        if not answer:
+            raise ValueError("empty Gemini response")
     except Exception as exc:
-        print(
-            "MedBot response parse error:",
-            str(exc),
-            raw[:1000]
-        )
-
+        print("Gemini response parse error:", str(exc), raw[:1000])
         raise HTTPException(
             status_code=502,
-            detail=(
-                "MedBot received an invalid "
-                "AI response."
-            )
+            detail="MedBot received an invalid Gemini response."
         )
 
-    return answer, used_model
-
+    return answer, GEMINI_MODEL
 
 def trigger_github_workflow(
     book_id: str,
@@ -777,13 +730,13 @@ def root():
     return {
         "name": "MedQ API",
         "status": "online",
-        "version": "0.5.0",
+        "version": "0.7.0",
         "features": [
             "r2-storage",
             "supabase-books",
             "direct-pdf-upload",
             "github-processing-worker",
-            "medbot-textbook-retrieval"
+            "medbot-gemini-textbook-retrieval"
         ]
     }
 
@@ -794,7 +747,7 @@ def health():
     return {
         "ok": True,
         "service": "medq-api",
-        "version": "0.5.0"
+        "version": "0.7.0"
     }
 
 
@@ -1078,18 +1031,32 @@ def medbot_chat(
     )
 
     if not relevant_chunks:
+        fallback_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are MedBot, a concise medical study assistant for AMC and FMGE preparation. "
+                    "No relevant uploaded textbook excerpt was found for this question, so answer from reliable general medical knowledge. "
+                    "State briefly that this answer is from general medical knowledge, not the uploaded textbook library. "
+                    "Explain clinical reasoning, key clues, diagnosis/concept, investigation or next step, management, and exam traps when relevant. "
+                    "Do not give personal medical advice and do not mention page numbers."
+                )
+            }
+        ]
+        if request.conversation:
+            for item in request.conversation[-6:]:
+                role = (item.role or "").lower()
+                content = (item.content or "").strip()
+                if role in ["user", "assistant"] and content:
+                    fallback_messages.append({"role": role, "content": content[:2500]})
+        fallback_messages.append({"role": "user", "content": message})
+        answer, used_model = call_gemini_medbot(fallback_messages)
         return {
             "ok": True,
-            "answer": (
-                "I could not find enough relevant "
-                "material in the processed MedQ "
-                "library to answer that confidently. "
-                "Try using the textbook term or choose "
-                "a specific book."
-            ),
+            "answer": answer,
             "sources": [],
             "grounded": False,
-            "model": OPENROUTER_MODEL,
+            "model": used_model,
         }
 
     book_ids = [
@@ -1181,21 +1148,14 @@ def medbot_chat(
     )
 
     system_prompt = (
-        "You are MedBot, MedQ's textbook-grounded medical reasoning assistant. "
-        "The student is preparing for AMC and FMGE. Use ONLY the supplied MedQ "
-        "textbook excerpts as the factual basis. Never manufacture a fact, "
-        "guideline, dose, investigation result, contraindication, or source. "
-        "If the retrieved excerpts are insufficient, state exactly what cannot "
-        "be confirmed from the current library. For clinical questions, reason "
-        "in this order when useful: key clues -> likely diagnosis/concept -> "
-        "why -> investigation/next best step -> management -> exam trap. For "
-        "MCQ explanations, explain why the best answer wins and briefly why "
-        "important distractors lose. Separate AMC-style next-best-step reasoning "
-        "from FMGE high-yield recall when that distinction helps. Use clear MBBS "
-        "language first, then precise medical terminology. Do not mention page "
-        "numbers. You may name the textbook and chapter. Keep answers concise "
-        "unless the student asks for depth. This is educational content, not "
-        "personal medical advice."
+        "You are MedBot, MedQ's medical reasoning assistant for an MBBS student preparing for AMC and FMGE. "
+        "Treat the supplied MedQ textbook excerpts as the PRIMARY source whenever they are relevant. "
+        "Do not misquote or invent textbook content. If the excerpts are incomplete, you MAY supplement with reliable general medical knowledge, "
+        "but explicitly label the supplemental part as 'General medical knowledge'. For clinical questions, reason in this order when useful: "
+        "key clues -> likely diagnosis/concept -> why -> investigation/next best step -> management -> exam trap. For MCQs, explain why the best "
+        "answer wins and why important distractors lose. Distinguish AMC-style clinical/next-best-step reasoning from FMGE high-yield recall when useful. "
+        "Use clear MBBS language followed by precise terminology. Never show page numbers. Keep answers concise unless depth is requested. "
+        "This is educational content, not personal medical advice."
     )
 
     user_prompt = (
@@ -1246,7 +1206,7 @@ def medbot_chat(
         "content": user_prompt
     })
 
-    answer, used_model = call_openrouter_medbot(
+    answer, used_model = call_gemini_medbot(
         messages
     )
 
