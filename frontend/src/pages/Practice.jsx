@@ -250,6 +250,16 @@ export default function Practice({
     setSaving
   ] = useState(false)
 
+  const [
+    bookmarkedQuestionIds,
+    setBookmarkedQuestionIds
+  ] = useState({})
+
+  const [
+    bookmarkSavingId,
+    setBookmarkSavingId
+  ] = useState(null)
+
 
   // =======================================================
   // LOAD DATA
@@ -257,7 +267,133 @@ export default function Practice({
 
   useEffect(() => {
     loadPracticeData()
+    loadBookmarks()
   }, [])
+
+
+  async function loadBookmarks() {
+
+    const {
+      data,
+      error: bookmarkError
+    } = await supabase
+      .from('bookmarks')
+      .select('question_id')
+      .eq(
+        'user_id',
+        session.user.id
+      )
+
+    if (bookmarkError) {
+      console.error(
+        'Unable to load bookmarks:',
+        bookmarkError.message
+      )
+      return
+    }
+
+    const next = {}
+
+    ;(data || []).forEach(
+      (row) => {
+        if (row.question_id) {
+          next[row.question_id] = true
+        }
+      }
+    )
+
+    setBookmarkedQuestionIds(next)
+  }
+
+
+  async function toggleBookmark(question) {
+
+    if (!question?.id) {
+      return
+    }
+
+    const questionId = question.id
+    const isBookmarked =
+      Boolean(
+        bookmarkedQuestionIds[
+          questionId
+        ]
+      )
+
+    setBookmarkSavingId(
+      questionId
+    )
+    setError('')
+
+    if (isBookmarked) {
+
+      const {
+        error: deleteError
+      } = await supabase
+        .from('bookmarks')
+        .delete()
+        .eq(
+          'user_id',
+          session.user.id
+        )
+        .eq(
+          'question_id',
+          questionId
+        )
+
+      if (deleteError) {
+        setError(
+          deleteError.message
+        )
+        setBookmarkSavingId(null)
+        return
+      }
+
+      setBookmarkedQuestionIds(
+        (previous) => {
+          const next = {
+            ...previous
+          }
+
+          delete next[
+            questionId
+          ]
+
+          return next
+        }
+      )
+
+    } else {
+
+      const {
+        error: insertError
+      } = await supabase
+        .from('bookmarks')
+        .insert({
+          user_id:
+            session.user.id,
+          question_id:
+            questionId
+        })
+
+      if (insertError) {
+        setError(
+          insertError.message
+        )
+        setBookmarkSavingId(null)
+        return
+      }
+
+      setBookmarkedQuestionIds(
+        (previous) => ({
+          ...previous,
+          [questionId]: true
+        })
+      )
+    }
+
+    setBookmarkSavingId(null)
+  }
 
 
   async function loadPracticeData() {
@@ -1099,6 +1235,17 @@ export default function Practice({
           >
             <RotateCcw size={18} />
             Mistakes
+          </button>
+
+          <button
+            onClick={() =>
+              navigate(
+                '/bookmarks'
+              )
+            }
+          >
+            <Bookmark size={18} />
+            Bookmarks
           </button>
 
           <button
@@ -2221,6 +2368,44 @@ export default function Practice({
                             </div>
 
                           </div>
+
+
+                          <button
+                            className="ask-medbot-button"
+                            disabled={
+                              bookmarkSavingId ===
+                              currentQuestion.id
+                            }
+                            onClick={() =>
+                              toggleBookmark(
+                                currentQuestion
+                              )
+                            }
+                          >
+
+                            <Bookmark
+                              size={19}
+                              fill={
+                                bookmarkedQuestionIds[
+                                  currentQuestion.id
+                                ]
+                                  ? 'currentColor'
+                                  : 'none'
+                              }
+                            />
+
+                            {
+                              bookmarkSavingId ===
+                              currentQuestion.id
+                                ? 'Saving...'
+                                : bookmarkedQuestionIds[
+                                    currentQuestion.id
+                                  ]
+                                  ? 'Remove Bookmark'
+                                  : 'Save Bookmark'
+                            }
+
+                          </button>
 
 
                           <button
