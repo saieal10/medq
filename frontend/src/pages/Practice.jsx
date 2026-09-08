@@ -2226,8 +2226,10 @@ export default function Practice({
                           <button
                             className="ask-medbot-button"
                             onClick={() =>
-                              alert(
-                                'MedBot connection is our next step.'
+                              navigate(
+                                `/medbot?question=${encodeURIComponent(
+                                  currentQuestion.id
+                                )}`
                               )
                             }
                           >
