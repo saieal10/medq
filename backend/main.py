@@ -2,6 +2,7 @@ import os
 import re
 import uuid
 import json
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -594,7 +595,13 @@ def _sse_event(payload: Dict[str, Any]) -> str:
 
 
 def stream_gemini_medbot(messages: List[Dict[str, str]]):
-    """Yield Gemini text as it arrives instead of waiting for the full answer."""
+    """Stream Gemini with automatic retry + model fallback.
+
+    Transient 429/500/502/503/504 responses are retried automatically.
+    The browser receives status events while MedBot retries, so it does not
+    look frozen. A user-visible error is emitted only after every configured
+    model/retry path has been exhausted.
+    """
     if not GEMINI_API_KEY:
         yield _sse_event({"type": "error", "message": "GEMINI_API_KEY is not configured on the backend."})
         return
@@ -603,15 +610,15 @@ def stream_gemini_medbot(messages: List[Dict[str, str]]):
     contents = []
     for item in messages:
         role = (item.get("role") or "").lower()
-        text = (item.get("content") or "").strip()
-        if not text:
+        msg_text = (item.get("content") or "").strip()
+        if not msg_text:
             continue
         if role == "system":
-            system_text += ("\n" if system_text else "") + text
+            system_text += ("\n" if system_text else "") + msg_text
             continue
         contents.append({
             "role": "model" if role == "assistant" else "user",
-            "parts": [{"text": text}],
+            "parts": [{"text": msg_text}],
         })
 
     payload = {
@@ -624,99 +631,155 @@ def stream_gemini_medbot(messages: List[Dict[str, str]]):
     if system_text:
         payload["systemInstruction"] = {"parts": [{"text": system_text}]}
 
+    # Configured model first, then lightweight fallbacks already used by MedQ.
     models = []
-    for model in [GEMINI_MODEL, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]:
+    for model in [
+        GEMINI_MODEL,
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+    ]:
         if model and model not in models:
             models.append(model)
 
-    last_detail = ""
+    retryable_codes = {429, 500, 502, 503, 504}
+    max_attempts_per_model = 3
+    last_error = ""
 
-    for model in models:
+    for model_index, model in enumerate(models):
         url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:streamGenerateContent?alt=sse"
         )
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={
-                "x-goog-api-key": GEMINI_API_KEY,
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "User-Agent": "MedQ-Backend",
-            },
-        )
 
-        try:
-            with urllib.request.urlopen(req, timeout=MEDBOT_AI_TIMEOUT) as response:
-                yield _sse_event({"type": "meta", "model": model})
-                accumulated = ""
-                for raw_line in response:
-                    line = raw_line.decode("utf-8", errors="ignore").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    raw_json = line[5:].strip()
-                    if not raw_json:
-                        continue
-                    try:
-                        data = json.loads(raw_json)
-                    except Exception:
-                        continue
+        for attempt in range(1, max_attempts_per_model + 1):
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={
+                    "x-goog-api-key": GEMINI_API_KEY,
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                    "User-Agent": "MedQ-Backend",
+                },
+            )
 
-                    try:
-                        parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
-                    except Exception:
-                        parts = []
-
-                    text = "".join(
-                        part.get("text", "")
-                        for part in parts
-                        if isinstance(part, dict) and part.get("text")
-                    )
-                    if not text:
-                        continue
-
-                    # Gemini usually sends deltas. This also handles cumulative
-                    # chunks without duplicating already-rendered text.
-                    if accumulated and text.startswith(accumulated):
-                        delta = text[len(accumulated):]
-                        accumulated = text
-                    else:
-                        delta = text
-                        accumulated += text
-
-                    if delta:
-                        yield _sse_event({"type": "delta", "text": delta})
-
-                yield _sse_event({"type": "done", "model": model})
-                return
-
-        except urllib.error.HTTPError as exc:
             try:
-                last_detail = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                last_detail = str(exc)
-            print(f"Gemini streaming MedBot {model} error:", last_detail)
+                with urllib.request.urlopen(req, timeout=MEDBOT_AI_TIMEOUT) as response:
+                    yield _sse_event({"type": "meta", "model": model})
+                    accumulated = ""
+                    received_text = False
 
-            if exc.code == 429:
-                yield _sse_event({
-                    "type": "error",
-                    "message": "Gemini is temporarily rate-limited. Please try again shortly.",
-                })
-                return
-            if exc.code in (400, 403, 404):
-                continue
-            yield _sse_event({"type": "error", "message": f"Gemini returned an error ({exc.code})."})
-            return
-        except Exception as exc:
-            last_detail = str(exc)
-            print(f"Gemini streaming MedBot {model} connection error:", last_detail)
-            continue
+                    for raw_line in response:
+                        line = raw_line.decode("utf-8", errors="ignore").strip()
+                        if not line.startswith("data:"):
+                            continue
+
+                        raw_json = line[5:].strip()
+                        if not raw_json:
+                            continue
+
+                        try:
+                            data = json.loads(raw_json)
+                        except Exception:
+                            continue
+
+                        try:
+                            parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
+                        except Exception:
+                            parts = []
+
+                        chunk_text = "".join(
+                            part.get("text", "")
+                            for part in parts
+                            if isinstance(part, dict) and part.get("text")
+                        )
+                        if not chunk_text:
+                            continue
+
+                        received_text = True
+
+                        # Handles both delta-style and cumulative chunks.
+                        if accumulated and chunk_text.startswith(accumulated):
+                            delta = chunk_text[len(accumulated):]
+                            accumulated = chunk_text
+                        else:
+                            delta = chunk_text
+                            accumulated += chunk_text
+
+                        if delta:
+                            yield _sse_event({"type": "delta", "text": delta})
+
+                    if received_text:
+                        yield _sse_event({"type": "done", "model": model})
+                        return
+
+                    # Empty successful response: retry/fallback instead of hanging.
+                    last_error = f"{model} returned an empty response."
+                    print("Gemini streaming MedBot:", last_error)
+
+            except urllib.error.HTTPError as exc:
+                try:
+                    last_error = exc.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    last_error = str(exc)
+
+                print(f"Gemini streaming MedBot {model} attempt {attempt} error:", last_error)
+
+                if exc.code in (400, 403, 404):
+                    # Model/project incompatibility: immediately try next model.
+                    break
+
+                if exc.code in retryable_codes:
+                    if attempt < max_attempts_per_model:
+                        # Respect Retry-After when present, otherwise exponential backoff.
+                        try:
+                            retry_after = float(exc.headers.get("Retry-After", "0") or "0")
+                        except Exception:
+                            retry_after = 0.0
+                        delay = retry_after if retry_after > 0 else min(1.5 * (2 ** (attempt - 1)), 6.0)
+
+                        yield _sse_event({
+                            "type": "status",
+                            "message": "MedBot is reconnecting to the AI…",
+                        })
+                        time.sleep(delay)
+                        continue
+
+                    # Same model exhausted: transparently fall through to next model.
+                    yield _sse_event({
+                        "type": "status",
+                        "message": "Trying another AI model…",
+                    })
+                    break
+
+                # Non-transient provider error: try next model rather than immediately failing.
+                break
+
+            except Exception as exc:
+                last_error = str(exc)
+                print(f"Gemini streaming MedBot {model} attempt {attempt} connection error:", last_error)
+
+                if attempt < max_attempts_per_model:
+                    yield _sse_event({
+                        "type": "status",
+                        "message": "MedBot is reconnecting to the AI…",
+                    })
+                    time.sleep(min(1.5 * (2 ** (attempt - 1)), 6.0))
+                    continue
+                break
+
+        # Small pause before switching models; avoids hammering the provider.
+        if model_index < len(models) - 1:
+            time.sleep(0.4)
 
     yield _sse_event({
         "type": "error",
-        "message": "MedBot could not connect to an available Gemini model.",
+        "message": (
+            "The AI service is temporarily busy. MedBot retried automatically, "
+            "but no Gemini model responded. Please try again in a minute."
+        ),
     })
 
 def trigger_github_workflow(
