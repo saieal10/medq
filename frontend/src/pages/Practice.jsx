@@ -1077,62 +1077,127 @@ export default function Practice({
   // START SESSION
   // =======================================================
 
-  async function startPractice() {
-    if (finalFilteredQuestions.length === 0) {
-      return
+  async function createPracticeSessionFromPool(pool) {
+    const shuffled = shuffleArray(pool)
+    const count = Math.min(requestedCount, shuffled.length)
+    const selectedQuestions = shuffled.slice(0, count)
+
+    if (!selectedQuestions.length) {
+      throw new Error('MedQ could not prepare questions for this session.')
     }
 
+    const { data: createdSession, error: sessionError } = await supabase
+      .from('practice_sessions')
+      .insert({
+        user_id: session.user.id,
+        exam_mode: examMode,
+        practice_mode: practiceMode,
+        subject: subject === 'all' ? null : subject,
+        book_id: null,
+        chapter: null,
+        topic: null,
+        difficulty: difficulty === 'all' ? null : difficulty,
+        requested_count: requestedCount,
+        question_count: selectedQuestions.length
+      })
+      .select('id')
+      .single()
+
+    if (sessionError) throw sessionError
+
+    setPracticeSessionId(createdSession.id)
+    setSessionQuestions(selectedQuestions)
+    setCurrentIndex(0)
+    setAnswers({})
+    setSubmittedQuestions({})
+    setSavedAttempts({})
+    setFlags({})
+    setElapsedSeconds(0)
+    setSessionFinished(false)
+    setSessionStarted(true)
+  }
+
+  async function startPractice() {
     setSaving(true)
     setError('')
+    setGenerationMessage('')
 
     try {
-      const shuffled = shuffleArray(finalFilteredQuestions)
-      const count = Math.min(requestedCount, shuffled.length)
-      const selectedQuestions = shuffled.slice(0, count)
-
-      const {
-        data: createdSession,
-        error: sessionError
-      } = await supabase
-        .from('practice_sessions')
-        .insert({
-          user_id: session.user.id,
-          exam_mode: examMode,
-          practice_mode: practiceMode,
-          subject: subject === 'all' ? null : subject,
-          book_id: bookId === 'all' ? null : bookId,
-          chapter: chapter === 'all' ? null : chapter,
-          topic: topic === 'all' ? null : topic,
-          difficulty: difficulty === 'all' ? null : difficulty,
-          requested_count: requestedCount,
-          question_count: selectedQuestions.length
-        })
-        .select('id')
-        .single()
-
-      if (sessionError) {
-        throw sessionError
+      // If enough unseen/generated questions already exist, start instantly.
+      if (finalFilteredQuestions.length >= Math.min(requestedCount, 10)) {
+        await createPracticeSessionFromPool(finalFilteredQuestions)
+        return
       }
 
-      setPracticeSessionId(createdSession.id)
-      setSessionQuestions(selectedQuestions)
-      setCurrentIndex(0)
-      setAnswers({})
-      setSubmittedQuestions({})
-      setSavedAttempts({})
-      setFlags({})
-      setElapsedSeconds(0)
-      setSessionFinished(false)
-      setSessionStarted(true)
+      // Autopilot: user should not manage books, chapters or AI batches.
+      const candidateBooks = eligibleBooks.filter(
+        (book) => !subject || subject === 'all' || !book.subject || book.subject === subject
+      )
+      const sourceBook = candidateBooks[0]
+
+      if (!sourceBook) {
+        throw new Error('Upload and process a textbook for this subject first.')
+      }
+
+      setGeneratingQuestions(true)
+      setGenerationMessage(
+        `MedQ is automatically building a ${examMode.toUpperCase()} session from your textbook library…`
+      )
+
+      const response = await fetch(`${API_URL}/api/questions/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          book_id: sourceBook.id,
+          chapter: '__AUTO__',
+          exam_mode: examMode,
+          count: requestedCount
+        })
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.detail || 'MedQ could not start automatic question generation.')
+      }
+
+      // Poll quietly; once enough questions arrive, start the session automatically.
+      for (let check = 0; check < 40; check += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 15000))
+
+        let query = supabase
+          .from('questions')
+          .select('*')
+          .order('created_at', { ascending: false })
+
+        if (subject !== 'all') query = query.eq('subject', subject)
+        if (examMode === 'amc') query = query.in('exam_type', ['amc', 'AMC', 'both', 'BOTH'])
+        if (examMode === 'fmge') query = query.in('exam_type', ['fmge', 'FMGE', 'both', 'BOTH'])
+        if (difficulty !== 'all') query = query.eq('difficulty', difficulty)
+
+        const { data: fresh, error: freshError } = await query
+        if (freshError) throw freshError
+
+        const freshPool = Array.isArray(fresh) ? fresh : []
+        if (freshPool.length >= Math.min(requestedCount, 10)) {
+          setQuestions(freshPool)
+          setGenerationMessage('')
+          setGeneratingQuestions(false)
+          await createPracticeSessionFromPool(freshPool)
+          return
+        }
+      }
+
+      throw new Error('AI generation is taking longer than expected. Try Start Practice again shortly.')
 
     } catch (startError) {
       console.error(startError)
-      setError(
-        startError.message ||
-        'Could not start the practice session.'
-      )
+      setError(startError.message || 'Could not start the practice session.')
     } finally {
       setSaving(false)
+      setGeneratingQuestions(false)
     }
   }
 
@@ -1925,7 +1990,7 @@ export default function Practice({
                 </div>
 
 
-                <div className="practice-field">
+                <div className="practice-field" style={{ display: 'none' }}>
 
                   <label>
                     Book
@@ -1963,7 +2028,7 @@ export default function Practice({
                 </div>
 
 
-                <div className="practice-field">
+                <div className="practice-field" style={{ display: 'none' }}>
 
                   <label>
                     Chapter
@@ -2001,7 +2066,7 @@ export default function Practice({
                 </div>
 
 
-                <div className="practice-field">
+                <div className="practice-field" style={{ display: 'none' }}>
 
                   <label>
                     Topic
@@ -2281,7 +2346,7 @@ export default function Practice({
                 <div>
 
                   <span>
-                    Available questions
+                    Ready in bank
                   </span>
 
                   <strong>
@@ -2296,10 +2361,7 @@ export default function Practice({
 
                 <button
                   className="btn btn-primary practice-start-button"
-                  disabled={
-                    finalFilteredQuestions
-                      .length === 0
-                  }
+                  disabled={saving || generatingQuestions}
                   onClick={
                     startPractice
                   }
