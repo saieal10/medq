@@ -4,6 +4,7 @@ import re
 import json
 import time
 import tempfile
+import statistics
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -270,12 +271,37 @@ def download_pdf(destination: str):
 # PDF TOC / CHAPTER MAP
 # =========================================================
 
+def professional_chapter_title(value: str) -> str:
+    """Turn bookmark labels into clean student-facing chapter names."""
+    title = normalize_label(value, 250)
+
+    # Remove broad hierarchy prefixes if they leak through.
+    title = re.sub(
+        r"^(?:chapter)\s+\d+[A-Za-z]?\s*[:.\-–—]?\s*",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Remove a standalone leading chapter number such as "123 Heart Failure".
+    # Keep disease numbers that are part of names by requiring a following word.
+    title = re.sub(
+        r"^\d{1,4}[A-Za-z]?\s*[:.\-–—]?\s+(?=[A-Za-z])",
+        "",
+        title,
+    ).strip()
+
+    return normalize_label(title, 250)
+
+
 def build_toc_ranges(document) -> List[Dict[str, Any]]:
     """
-    Prefer the PDF's embedded bookmarks/TOC over guessing headings
-    from random page text.
+    Build a professional chapter map from embedded PDF bookmarks.
 
-    fitz.get_toc() rows are [level, title, page].
+    The old worker chose the shallowest useful TOC level, which produced
+    broad labels such as "Part 10: Disorders of the Cardiovascular System".
+    This version scores TOC levels and prefers the chapter-like level:
+    many entries, sensible page spans, and few broad Part/Section labels.
     """
     toc = document.get_toc(simple=True) or []
 
@@ -288,57 +314,121 @@ def build_toc_ranges(document) -> List[Dict[str, Any]]:
         level, title, page = row[:3]
 
         try:
+            level = int(level)
             page = int(page)
         except Exception:
             continue
 
-        title = normalize_label(title)
+        title = normalize_label(title, 250)
 
         if page < 1 or not title:
             continue
 
-        cleaned.append((int(level), title, page))
+        cleaned.append((level, title, page))
 
     if not cleaned:
         print("[TOC] No usable embedded TOC found.")
         return []
 
-    # Prefer chapter-like TOC levels. The shallowest level can be
-    # broad "Parts", so choose the shallowest level that has enough
-    # meaningful entries.
-    level_counts = {}
+    levels = sorted({level for level, _, _ in cleaned})
+    scored = []
 
-    for level, title, page in cleaned:
-        if not is_nonclinical_chapter(title):
-            level_counts[level] = level_counts.get(level, 0) + 1
+    for level in levels:
+        entries = [
+            (title, page)
+            for row_level, title, page in cleaned
+            if row_level == level
+            and not is_nonclinical_chapter(title)
+        ]
 
-    candidate_levels = [
-        level
-        for level, count in sorted(level_counts.items())
-        if count >= 5
-    ]
+        if len(entries) < 8:
+            continue
 
-    preferred_level = candidate_levels[0] if candidate_levels else None
+        pages = sorted(page for _, page in entries)
+        gaps = [
+            max(1, pages[i + 1] - pages[i])
+            for i in range(len(pages) - 1)
+        ]
 
-    if preferred_level is None:
-        print("[TOC] No reliable chapter level found.")
+        median_gap = (
+            statistics.median(gaps)
+            if gaps
+            else 999
+        )
+
+        broad_count = sum(
+            1
+            for title, _ in entries
+            if re.match(
+                r"^(part|section)\s+[ivxlcdm\d]+\b",
+                title,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        broad_ratio = broad_count / max(len(entries), 1)
+
+        # Chapter-level bookmarks usually number in the tens/hundreds and
+        # span a few pages each. Extremely deep heading levels often have
+        # hundreds/thousands of tiny 1-page entries.
+        count = len(entries)
+        sensible_count = 10 <= count <= 700
+        sensible_span = 2 <= median_gap <= 40
+
+        score = 0.0
+        if sensible_count:
+            score += 40
+        if sensible_span:
+            score += 35
+        score += min(count, 400) / 10
+        score -= broad_ratio * 80
+
+        # Prefer deeper chapter level over broad Part level when scores tie.
+        score += level * 2
+
+        scored.append((score, level, count, median_gap, broad_ratio))
+
+    if not scored:
+        print("[TOC] No reliable chapter-like bookmark level found.")
         return []
 
-    chapter_entries = [
-        (level, title, page)
+    scored.sort(reverse=True)
+    _, preferred_level, count, median_gap, broad_ratio = scored[0]
+
+    print(
+        f"[TOC] Selected level {preferred_level}; "
+        f"entries={count}; median span≈{median_gap:.1f} pages; "
+        f"broad ratio={broad_ratio:.2f}."
+    )
+
+    raw_entries = [
+        (title, page)
         for level, title, page in cleaned
         if level == preferred_level
     ]
 
     ranges = []
 
-    for i, (_, title, start_page) in enumerate(chapter_entries):
-        if is_nonclinical_chapter(title):
+    for i, (raw_title, start_page) in enumerate(raw_entries):
+        if is_nonclinical_chapter(raw_title):
+            continue
+
+        title = professional_chapter_title(raw_title)
+
+        if (
+            not title
+            or looks_like_junk_label(title)
+            or re.match(
+                r"^(part|section)\s+[ivxlcdm\d]+\b",
+                title,
+                flags=re.IGNORECASE,
+            )
+        ):
             continue
 
         end_page = (
-            chapter_entries[i + 1][2] - 1
-            if i + 1 < len(chapter_entries)
+            raw_entries[i + 1][1] - 1
+            if i + 1 < len(raw_entries)
             else len(document)
         )
 
@@ -351,13 +441,23 @@ def build_toc_ranges(document) -> List[Dict[str, Any]]:
             "page_end": end_page,
         })
 
+    # De-duplicate adjacent duplicate bookmark titles while preserving order.
+    deduped = []
+    seen = set()
+
+    for item in ranges:
+        key = item["title"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
     print(
-        f"[TOC] Using level {preferred_level}; "
-        f"{len(ranges)} clinical chapter ranges."
+        f"[TOC] Professional chapter catalogue: "
+        f"{len(deduped)} chapters."
     )
 
-    return ranges
-
+    return deduped
 
 def chapter_for_page(
     page_number: int,
@@ -1345,7 +1445,7 @@ def generate_seed_questions(
 
 def main():
     print("========================================")
-    print("MEDQ TEXTBOOK INGESTION WORKER v2")
+    print("MEDQ TEXTBOOK INGESTION WORKER v3")
     print(f"Book ID: {BOOK_ID}")
     print(f"Subject: {BOOK_SUBJECT}")
     print("========================================")
@@ -1385,6 +1485,24 @@ def main():
             set_stage(
                 "building_knowledge_base",
                 extraction_progress=100,
+            )
+
+            # Reprocessing must not leave stale broad Part-level chunks or
+            # old seed questions behind. This only affects the selected book.
+            print("[DB] Clearing previous generated questions and chunks for this book...")
+            (
+                supabase
+                .table("questions")
+                .delete()
+                .eq("book_id", BOOK_ID)
+                .execute()
+            )
+            (
+                supabase
+                .table("book_chunks")
+                .delete()
+                .eq("book_id", BOOK_ID)
+                .execute()
             )
 
             chunks = make_chunks(pages)
