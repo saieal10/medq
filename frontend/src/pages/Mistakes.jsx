@@ -10,6 +10,7 @@ import {
   AlertCircle,
   ArrowLeft,
   BookOpen,
+  Bookmark,
   Brain,
   CheckCircle2,
   Home,
@@ -344,6 +345,16 @@ export default function Mistakes({
           >
             <RotateCcw size={18} />
             Mistakes
+          </button>
+
+
+          <button
+            onClick={() =>
+              navigate('/bookmarks')
+            }
+          >
+            <Bookmark size={18} />
+            Bookmarks
           </button>
 
 
