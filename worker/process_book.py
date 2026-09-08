@@ -4,7 +4,7 @@ import re
 import json
 import time
 import tempfile
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import boto3
 import fitz
