@@ -12,6 +12,7 @@ import {
   BookOpen,
   Bookmark,
   Brain,
+  History as HistoryIcon,
   CheckCircle2,
   Home,
   Library,
@@ -357,6 +358,14 @@ export default function Mistakes({
             Bookmarks
           </button>
 
+          <button
+            onClick={() =>
+              navigate('/history')
+            }
+          >
+            <HistoryIcon size={18} />
+            History
+          </button>
 
           <button
             onClick={() =>
