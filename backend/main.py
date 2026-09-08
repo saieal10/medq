@@ -5,12 +5,12 @@ import json
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import boto3
 from botocore.config import Config
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -20,7 +20,7 @@ load_dotenv()
 
 app = FastAPI(
     title="MedQ API",
-    version="0.3.0"
+    version="0.4.0"
 )
 
 
@@ -67,6 +67,14 @@ GITHUB_WORKFLOW_FILE = os.getenv(
 GITHUB_BRANCH = os.getenv(
     "GITHUB_BRANCH",
     "main"
+)
+
+
+# OpenRouter / MedBot
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv(
+    "OPENROUTER_MODEL",
+    "openrouter/free"
 )
 
 
@@ -161,6 +169,19 @@ class RegisterBookRequest(BaseModel):
     uploaded_by: str
 
 
+
+class MedBotMessage(BaseModel):
+    role: str
+    content: str
+
+
+class MedBotRequest(BaseModel):
+    message: str
+    book_id: Optional[str] = None
+    question_id: Optional[str] = None
+    conversation: Optional[List[MedBotMessage]] = None
+
+
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
@@ -176,6 +197,404 @@ def safe_filename(filename: str):
     )
 
     return filename[:180]
+
+
+
+
+# ---------------------------------------------------------
+# MedBot helpers
+# ---------------------------------------------------------
+
+MEDBOT_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by",
+    "for", "from", "how", "i", "in", "is", "it", "me",
+    "of", "on", "or", "that", "the", "this", "to", "what",
+    "when", "where", "which", "why", "with", "you", "your",
+    "explain", "tell", "about", "please", "can", "could",
+    "would", "should", "do", "does", "did"
+}
+
+
+def require_authenticated_user(
+    authorization: Optional[str]
+):
+
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+
+    parts = authorization.split(
+        " ",
+        1
+    )
+
+    if (
+        len(parts) != 2
+        or parts[0].lower() != "bearer"
+        or not parts[1].strip()
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header."
+        )
+
+    token = parts[1].strip()
+    supabase = get_supabase()
+
+    try:
+        response = supabase.auth.get_user(
+            token
+        )
+        user = getattr(
+            response,
+            "user",
+            None
+        )
+    except Exception:
+        user = None
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Session is invalid or expired."
+        )
+
+    return user
+
+
+def medbot_tokens(text: str):
+
+    words = re.findall(
+        r"[A-Za-z0-9]+",
+        (text or "").lower()
+    )
+
+    return [
+        word
+        for word in words
+        if (
+            len(word) >= 3
+            and word not in MEDBOT_STOP_WORDS
+        )
+    ]
+
+
+def get_chunk_text(chunk: Dict[str, Any]):
+
+    for key in [
+        "content",
+        "text",
+        "chunk_text",
+        "text_content",
+        "body",
+        "source_text"
+    ]:
+        value = chunk.get(key)
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
+def get_chunk_chapter(chunk: Dict[str, Any]):
+
+    for key in [
+        "chapter",
+        "chapter_title",
+        "section",
+        "section_title",
+        "topic"
+    ]:
+        value = chunk.get(key)
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
+def load_medbot_chunks(
+    supabase,
+    book_id: Optional[str] = None,
+    max_rows: int = 5000
+):
+
+    rows = []
+    batch_size = 1000
+    start = 0
+
+    while start < max_rows:
+
+        query = (
+            supabase
+            .table("book_chunks")
+            .select("*")
+        )
+
+        if book_id:
+            query = query.eq(
+                "book_id",
+                book_id
+            )
+
+        result = (
+            query
+            .range(
+                start,
+                min(
+                    start + batch_size - 1,
+                    max_rows - 1
+                )
+            )
+            .execute()
+        )
+
+        batch = result.data or []
+        rows.extend(batch)
+
+        if len(batch) < batch_size:
+            break
+
+        start += batch_size
+
+    return rows
+
+
+def rank_medbot_chunks(
+    chunks: List[Dict[str, Any]],
+    search_text: str,
+    limit: int = 6
+):
+
+    tokens = medbot_tokens(
+        search_text
+    )
+
+    if not tokens:
+        return []
+
+    unique_tokens = list(
+        dict.fromkeys(tokens)
+    )
+
+    phrase = " ".join(
+        unique_tokens[:8]
+    )
+
+    ranked = []
+
+    for chunk in chunks:
+
+        body = get_chunk_text(
+            chunk
+        )
+
+        if not body:
+            continue
+
+        chapter = get_chunk_chapter(
+            chunk
+        )
+
+        body_lower = body.lower()
+        chapter_lower = chapter.lower()
+
+        score = 0.0
+        matched = 0
+
+        for token in unique_tokens:
+
+            body_count = body_lower.count(
+                token
+            )
+
+            if body_count:
+                matched += 1
+                score += min(
+                    body_count,
+                    5
+                )
+
+            if token in chapter_lower:
+                score += 4.0
+
+        if phrase and phrase in body_lower:
+            score += 8.0
+
+        if matched >= 2:
+            score += matched * 1.5
+
+        if score > 0:
+            ranked.append(
+                (score, chunk)
+            )
+
+    ranked.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+    return [
+        chunk
+        for _, chunk in ranked[:limit]
+    ]
+
+
+def load_book_titles(
+    supabase,
+    book_ids: List[str]
+):
+
+    titles = {}
+
+    for book_id in list(
+        dict.fromkeys(
+            book_ids
+        )
+    ):
+
+        if not book_id:
+            continue
+
+        try:
+            result = (
+                supabase
+                .table("books")
+                .select("id,title,subject")
+                .eq(
+                    "id",
+                    book_id
+                )
+                .limit(1)
+                .execute()
+            )
+
+            if result.data:
+                titles[book_id] = (
+                    result.data[0]
+                    .get("title")
+                    or "Uploaded textbook"
+                )
+
+        except Exception:
+            pass
+
+    return titles
+
+
+def call_openrouter_medbot(
+    messages: List[Dict[str, str]]
+):
+
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "OPENROUTER_API_KEY is not "
+                "configured on the backend."
+            )
+        )
+
+    url = (
+        "https://openrouter.ai/api/v1/"
+        "chat/completions"
+    )
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 1200,
+    }
+
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(
+            payload
+        ).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": (
+                f"Bearer {OPENROUTER_API_KEY}"
+            ),
+            "Content-Type": "application/json",
+            "HTTP-Referer": (
+                "https://medq-practice.netlify.app"
+            ),
+            "X-Title": "MedQ MedBot",
+            "User-Agent": "MedQ-Backend",
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=90
+        ) as response:
+            raw = response.read().decode(
+                "utf-8"
+            )
+
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode(
+                "utf-8"
+            )
+        except Exception:
+            detail = str(exc)
+
+        print(
+            "OpenRouter MedBot error:",
+            detail
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "MedBot AI provider returned "
+                f"an error ({exc.code})."
+            )
+        )
+
+    except Exception as exc:
+        print(
+            "MedBot connection error:",
+            str(exc)
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "MedBot could not contact the "
+                "AI provider."
+            )
+        )
+
+    try:
+        data = json.loads(raw)
+        answer = (
+            data["choices"][0]["message"]["content"]
+        ).strip()
+    except Exception as exc:
+        print(
+            "MedBot response parse error:",
+            str(exc),
+            raw[:1000]
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "MedBot received an invalid "
+                "AI response."
+            )
+        )
+
+    return answer
+
 
 
 def trigger_github_workflow(
@@ -314,12 +733,13 @@ def root():
     return {
         "name": "MedQ API",
         "status": "online",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "features": [
             "r2-storage",
             "supabase-books",
             "direct-pdf-upload",
-            "github-processing-worker"
+            "github-processing-worker",
+            "medbot-textbook-retrieval"
         ]
     }
 
@@ -332,6 +752,328 @@ def health():
         "service": "medq-api",
         "version": "0.3.0"
     }
+
+
+
+
+# ---------------------------------------------------------
+# MedBot textbook-grounded chat
+# ---------------------------------------------------------
+
+@app.post("/api/medbot/chat")
+def medbot_chat(
+    request: MedBotRequest,
+    authorization: Optional[str] = Header(
+        default=None
+    )
+):
+
+    require_authenticated_user(
+        authorization
+    )
+
+    message = (
+        request.message
+        or ""
+    ).strip()
+
+    if len(message) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter a question."
+        )
+
+    if len(message) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="Question is too long."
+        )
+
+    supabase = get_supabase()
+
+    search_text = message
+    question_context = ""
+    preferred_book_id = request.book_id
+
+    # If MedBot was opened from a practice question,
+    # use that question as extra retrieval context.
+    if request.question_id:
+        try:
+            result = (
+                supabase
+                .table("questions")
+                .select("*")
+                .eq(
+                    "id",
+                    request.question_id
+                )
+                .limit(1)
+                .execute()
+            )
+
+            if result.data:
+                question = result.data[0]
+
+                stem = (
+                    question.get("stem")
+                    or ""
+                )
+
+                topic = (
+                    question.get("topic")
+                    or ""
+                )
+
+                chapter = (
+                    question.get("chapter")
+                    or ""
+                )
+
+                explanation = (
+                    question.get("explanation")
+                    or ""
+                )
+
+                if not preferred_book_id:
+                    preferred_book_id = (
+                        question.get("book_id")
+                    )
+
+                search_text = " ".join([
+                    message,
+                    stem,
+                    topic,
+                    chapter
+                ])
+
+                question_context = (
+                    "Practice question context:\n"
+                    f"{stem}\n"
+                )
+
+                if explanation:
+                    question_context += (
+                        "Existing generated explanation: "
+                        f"{explanation}\n"
+                    )
+
+        except Exception as exc:
+            print(
+                "Unable to load question context:",
+                str(exc)
+            )
+
+    try:
+        chunks = load_medbot_chunks(
+            supabase,
+            book_id=preferred_book_id
+        )
+    except Exception as exc:
+        print(
+            "Unable to load book chunks:",
+            str(exc)
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "MedBot could not search the "
+                "processed textbook library."
+            )
+        )
+
+    if not chunks:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No processed textbook content is "
+                "available yet. Wait for a book to "
+                "finish processing."
+            )
+        )
+
+    relevant_chunks = rank_medbot_chunks(
+        chunks,
+        search_text,
+        limit=6
+    )
+
+    if not relevant_chunks:
+        return {
+            "ok": True,
+            "answer": (
+                "I could not find enough relevant "
+                "material in the processed MedQ "
+                "library to answer that confidently. "
+                "Try using the textbook term or choose "
+                "a specific book."
+            ),
+            "sources": [],
+            "grounded": False,
+            "model": OPENROUTER_MODEL,
+        }
+
+    book_ids = [
+        str(chunk.get("book_id"))
+        for chunk in relevant_chunks
+        if chunk.get("book_id")
+    ]
+
+    book_titles = load_book_titles(
+        supabase,
+        book_ids
+    )
+
+    context_sections = []
+    source_items = []
+    seen_sources = set()
+
+    total_chars = 0
+    max_context_chars = 22000
+
+    for index, chunk in enumerate(
+        relevant_chunks,
+        start=1
+    ):
+
+        body = get_chunk_text(
+            chunk
+        )
+
+        if not body:
+            continue
+
+        book_id = str(
+            chunk.get("book_id")
+            or ""
+        )
+
+        title = (
+            book_titles.get(book_id)
+            or "Uploaded textbook"
+        )
+
+        chapter = get_chunk_chapter(
+            chunk
+        )
+
+        remaining = (
+            max_context_chars - total_chars
+        )
+
+        if remaining <= 0:
+            break
+
+        body = body[:remaining]
+        total_chars += len(body)
+
+        header = f"SOURCE {index}: {title}"
+
+        if chapter:
+            header += f" | {chapter}"
+
+        context_sections.append(
+            f"{header}\n{body}"
+        )
+
+        source_key = (
+            title,
+            chapter
+        )
+
+        if source_key not in seen_sources:
+            seen_sources.add(
+                source_key
+            )
+
+            item = {
+                "book_title": title
+            }
+
+            if chapter:
+                item["chapter"] = chapter
+
+            source_items.append(
+                item
+            )
+
+    context_text = "\n\n---\n\n".join(
+        context_sections
+    )
+
+    system_prompt = (
+        "You are MedBot, the medical study assistant inside MedQ. "
+        "Answer for an MBBS student preparing for AMC and FMGE. "
+        "Use ONLY the supplied MedQ textbook excerpts as the factual "
+        "basis for the answer. If those excerpts are insufficient, say "
+        "that clearly instead of inventing facts. Explain clinical logic "
+        "in clear, exam-focused language. Distinguish diagnosis, mechanism, "
+        "investigation and management when useful. Do not mention page "
+        "numbers. Do not pretend that a source says something it does not. "
+        "You may name the textbook or chapter when useful. Keep the response "
+        "focused and educational rather than giving personal medical advice."
+    )
+
+    user_prompt = (
+        f"Student question:\n{message}\n\n"
+    )
+
+    if question_context:
+        user_prompt += (
+            f"{question_context}\n"
+        )
+
+    user_prompt += (
+        "Relevant MedQ textbook excerpts:\n\n"
+        f"{context_text}"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+
+    # Keep only a small amount of recent chat history.
+    if request.conversation:
+        for item in request.conversation[-6:]:
+            role = (
+                item.role
+                or ""
+            ).lower()
+
+            content = (
+                item.content
+                or ""
+            ).strip()
+
+            if (
+                role in ["user", "assistant"]
+                and content
+            ):
+                messages.append({
+                    "role": role,
+                    "content": content[:4000]
+                })
+
+    messages.append({
+        "role": "user",
+        "content": user_prompt
+    })
+
+    answer = call_openrouter_medbot(
+        messages
+    )
+
+    return {
+        "ok": True,
+        "answer": answer,
+        "sources": source_items,
+        "grounded": True,
+        "model": OPENROUTER_MODEL,
+    }
+
 
 
 # ---------------------------------------------------------
