@@ -486,7 +486,8 @@ export default function Practice({
 
     const [
       questionResponse,
-      bookResponse
+      bookResponse,
+      chunkResponse
     ] = await Promise.all([
       supabase
         .from('questions')
@@ -508,7 +509,12 @@ export default function Practice({
           {
             ascending: false
           }
-        )
+        ),
+
+      supabase
+        .from('book_chunks')
+        .select('book_id,chapter')
+        .order('book_id')
     ])
 
     if (questionResponse.error) {
@@ -533,6 +539,18 @@ export default function Practice({
     } else {
       setBooks(
         bookResponse.data || []
+      )
+    }
+
+    if (chunkResponse.error) {
+      console.error(
+        'Book chunks load error:',
+        chunkResponse.error
+      )
+      setBookChunks([])
+    } else {
+      setBookChunks(
+        chunkResponse.data || []
       )
     }
 
@@ -698,13 +716,40 @@ export default function Practice({
 
 
   const chapters = useMemo(() => {
-    return uniqueCleanLabels(
+    const chunkChapterValues = bookChunks
+      .filter((chunk) => {
+        if (bookId !== 'all') {
+          return chunk.book_id === bookId
+        }
+
+        if (subject !== 'all') {
+          const book = books.find(
+            (item) => item.id === chunk.book_id
+          )
+          return book?.subject === subject
+        }
+
+        return true
+      })
+      .map((chunk) => chunk.chapter)
+
+    const questionChapterValues =
       baseFilteredQuestions.map(
         (question) => question.chapter
-      ),
+      )
+
+    return uniqueCleanLabels(
+      [
+        ...chunkChapterValues,
+        ...questionChapterValues
+      ],
       'chapter'
     )
   }, [
+    bookChunks,
+    books,
+    bookId,
+    subject,
     baseFilteredQuestions
   ])
 
@@ -807,6 +852,130 @@ export default function Practice({
     topics
   ])
 
+
+
+  function questionCountForChapter(chapterName) {
+    return questions.filter((question) => {
+      const examMatches =
+        examMode === 'mixed' ||
+        question.exam_type === examMode ||
+        question.exam_type === 'both'
+
+      const bookMatches =
+        bookId === 'all' ||
+        question.book_id === bookId
+
+      const subjectMatches =
+        subject === 'all' ||
+        question.subject === subject
+
+      return (
+        examMatches &&
+        bookMatches &&
+        subjectMatches &&
+        question.chapter === chapterName
+      )
+    }).length
+  }
+
+
+  async function generateQuestionsForChapter() {
+    if (bookId === 'all' || chapter === 'all') {
+      setGenerationMessage(
+        'Choose one book and one chapter first.'
+      )
+      return
+    }
+
+    setGeneratingQuestions(true)
+    setGenerationMessage('')
+    setError('')
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/questions/generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization:
+              `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            book_id: bookId,
+            chapter,
+            exam_mode: examMode,
+            count: generationCount
+          })
+        }
+      )
+
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+          'Could not start question generation.'
+        )
+      }
+
+      setGenerationMessage(
+        `Generation started for ${generationCount} ${examMode.toUpperCase()} question${generationCount === 1 ? '' : 's'}. MedQ will add them when the worker finishes.`
+      )
+
+      // Poll the question bank while the GitHub worker runs.
+      let checks = 0
+      const startingCount = questionCountForChapter(chapter)
+
+      const timer = window.setInterval(async () => {
+        checks += 1
+
+        const { data: freshQuestions } = await supabase
+          .from('questions')
+          .select('*')
+          .eq('book_id', bookId)
+          .eq('chapter', chapter)
+          .order('created_at', { ascending: false })
+
+        if (Array.isArray(freshQuestions)) {
+          setQuestions((current) => {
+            const other = current.filter(
+              (item) => !(
+                item.book_id === bookId &&
+                item.chapter === chapter
+              )
+            )
+            return [...freshQuestions, ...other]
+          })
+
+          if (freshQuestions.length > startingCount) {
+            window.clearInterval(timer)
+            setGeneratingQuestions(false)
+            setGenerationMessage(
+              `${freshQuestions.length - startingCount} new question${freshQuestions.length - startingCount === 1 ? '' : 's'} added. You can start practising now.`
+            )
+          }
+        }
+
+        // Stop browser polling after 10 minutes. The worker may still finish later.
+        if (checks >= 40) {
+          window.clearInterval(timer)
+          setGeneratingQuestions(false)
+          setGenerationMessage(
+            'Generation is still running or the AI provider is busy. The questions will appear automatically after the worker succeeds.'
+          )
+        }
+      }, 15000)
+
+    } catch (generationError) {
+      setGeneratingQuestions(false)
+      setGenerationMessage('')
+      setError(
+        generationError?.message ||
+        'Could not start question generation.'
+      )
+    }
+  }
 
 
   // =======================================================
@@ -1650,7 +1819,7 @@ export default function Practice({
                           key={item}
                           value={item}
                         >
-                          {item}
+                          {item} ({questionCountForChapter(item)})
                         </option>
 
                       )
@@ -1940,6 +2109,77 @@ export default function Practice({
 
               </div>
 
+
+              {bookId !== 'all' && chapter !== 'all' && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '18px',
+                    padding: '16px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div className="panel-kicker">
+                      BUILD THIS CHAPTER
+                    </div>
+                    <strong>
+                      Need more questions from {chapter}?
+                    </strong>
+                    <small style={{ display: 'block', marginTop: '4px' }}>
+                      MedQ uses this chapter's processed textbook chunks and avoids existing question stems.
+                    </small>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <select
+                      value={generationCount}
+                      onChange={(event) =>
+                        setGenerationCount(Number(event.target.value))
+                      }
+                      disabled={generatingQuestions}
+                    >
+                      <option value={10}>Generate 10</option>
+                      <option value={20}>Generate 20</option>
+                      <option value={50}>Generate 50</option>
+                    </select>
+
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={generatingQuestions}
+                      onClick={generateQuestionsForChapter}
+                    >
+                      {generatingQuestions
+                        ? 'Generating…'
+                        : `Generate ${generationCount}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {generationMessage && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '12px',
+                    padding: '12px 16px'
+                  }}
+                >
+                  <small>{generationMessage}</small>
+                </div>
+              )}
 
               <div className="practice-start-bar">
 
