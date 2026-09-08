@@ -212,6 +212,11 @@ export default function Practice({
   ] = useState(false)
 
   const [
+    practiceSessionId,
+    setPracticeSessionId
+  ] = useState(null)
+
+  const [
     sessionQuestions,
     setSessionQuestions
   ] = useState([])
@@ -712,40 +717,63 @@ export default function Practice({
   // START SESSION
   // =======================================================
 
-  function startPractice() {
-    if (
-      finalFilteredQuestions.length === 0
-    ) {
+  async function startPractice() {
+    if (finalFilteredQuestions.length === 0) {
       return
     }
 
-    const shuffled = shuffleArray(
-      finalFilteredQuestions
-    )
-
-    const count = Math.min(
-      requestedCount,
-      shuffled.length
-    )
-
-    setSessionQuestions(
-      shuffled.slice(
-        0,
-        count
-      )
-    )
-
-    setCurrentIndex(0)
-    setAnswers({})
-    setSubmittedQuestions({})
-    setSavedAttempts({})
-    setFlags({})
-    setElapsedSeconds(0)
-
-    setSessionFinished(false)
-    setSessionStarted(true)
-
+    setSaving(true)
     setError('')
+
+    try {
+      const shuffled = shuffleArray(finalFilteredQuestions)
+      const count = Math.min(requestedCount, shuffled.length)
+      const selectedQuestions = shuffled.slice(0, count)
+
+      const {
+        data: createdSession,
+        error: sessionError
+      } = await supabase
+        .from('practice_sessions')
+        .insert({
+          user_id: session.user.id,
+          exam_mode: examMode,
+          practice_mode: practiceMode,
+          subject: subject === 'all' ? null : subject,
+          book_id: bookId === 'all' ? null : bookId,
+          chapter: chapter === 'all' ? null : chapter,
+          topic: topic === 'all' ? null : topic,
+          difficulty: difficulty === 'all' ? null : difficulty,
+          requested_count: requestedCount,
+          question_count: selectedQuestions.length
+        })
+        .select('id')
+        .single()
+
+      if (sessionError) {
+        throw sessionError
+      }
+
+      setPracticeSessionId(createdSession.id)
+      setSessionQuestions(selectedQuestions)
+      setCurrentIndex(0)
+      setAnswers({})
+      setSubmittedQuestions({})
+      setSavedAttempts({})
+      setFlags({})
+      setElapsedSeconds(0)
+      setSessionFinished(false)
+      setSessionStarted(true)
+
+    } catch (startError) {
+      console.error(startError)
+      setError(
+        startError.message ||
+        'Could not start the practice session.'
+      )
+    } finally {
+      setSaving(false)
+    }
   }
 
 
@@ -883,7 +911,10 @@ export default function Practice({
           selectedOption,
 
         is_correct:
-          answerIsCorrect
+          answerIsCorrect,
+
+        session_id:
+          practiceSessionId
       })
 
     if (attemptError) {
@@ -1054,7 +1085,10 @@ export default function Practice({
                 selected ===
                 question
                   .correct_option
-                  ?.toUpperCase()
+                  ?.toUpperCase(),
+
+              session_id:
+                practiceSessionId
             })
           }
         }
@@ -1074,6 +1108,28 @@ export default function Practice({
 
         if (attemptsError) {
           throw attemptsError
+        }
+      }
+
+      if (practiceSessionId) {
+        const {
+          error: sessionUpdateError
+        } = await supabase
+          .from('practice_sessions')
+          .update({
+            answered_count: sessionStats.answered,
+            correct_count: sessionStats.correct,
+            incorrect_count: sessionStats.incorrect,
+            unanswered_count: sessionStats.unanswered,
+            accuracy: sessionStats.accuracy,
+            duration_seconds: elapsedSeconds,
+            finished_at: new Date().toISOString()
+          })
+          .eq('id', practiceSessionId)
+          .eq('user_id', session.user.id)
+
+        if (sessionUpdateError) {
+          throw sessionUpdateError
         }
       }
 
@@ -1169,6 +1225,7 @@ export default function Practice({
   function newSession() {
     setSessionStarted(false)
     setSessionFinished(false)
+    setPracticeSessionId(null)
     setSessionQuestions([])
     setAnswers({})
     setSubmittedQuestions({})
