@@ -4,6 +4,7 @@ import {
   Bookmark,
   BookOpen,
   Brain,
+  History as HistoryIcon,
   LogOut,
   RotateCcw,
   Sparkles,
@@ -238,6 +239,15 @@ export default function Bookmarks({ session }) {
           >
             <Bookmark size={18} />
             Bookmarks
+          </button>
+
+          <button
+            onClick={() =>
+              navigate('/history')
+            }
+          >
+            <HistoryIcon size={18} />
+            History
           </button>
 
           <button
