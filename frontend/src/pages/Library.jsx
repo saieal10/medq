@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Bookmark,
   BookOpen,
+  History as HistoryIcon,
   Brain,
   CheckCircle2,
   FileText,
@@ -322,6 +323,13 @@ export default function Library({ session }) {
           >
             <Bookmark size={18} />
             Bookmarks
+          </button>
+
+          <button
+            onClick={() => navigate('/history')}
+          >
+            <HistoryIcon size={18} />
+            History
           </button>
 
           <button className="side-active">
