@@ -12,6 +12,7 @@ from botocore.config import Config
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from supabase import create_client
 
@@ -570,6 +571,154 @@ def call_gemini_medbot(messages: List[Dict[str, str]]):
     )
 
 
+
+
+def medbot_should_use_library(message: str) -> bool:
+    """Only search the large textbook library when the student asks for it.
+
+    Normal medical questions take the fast AI-only path, like ChatGPT/Gemini.
+    This avoids scanning up to thousands of Supabase chunks before every reply.
+    """
+    text = (message or "").lower()
+    library_phrases = [
+        "my library", "medq library", "uploaded book", "uploaded textbook",
+        "from the book", "from my book", "from textbook", "from the textbook",
+        "according to harrison", "harrison", "prepladder", "my notes",
+        "according to the book", "source from", "book source", "textbook source",
+    ]
+    return any(phrase in text for phrase in library_phrases)
+
+
+def _sse_event(payload: Dict[str, Any]) -> str:
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def stream_gemini_medbot(messages: List[Dict[str, str]]):
+    """Yield Gemini text as it arrives instead of waiting for the full answer."""
+    if not GEMINI_API_KEY:
+        yield _sse_event({"type": "error", "message": "GEMINI_API_KEY is not configured on the backend."})
+        return
+
+    system_text = ""
+    contents = []
+    for item in messages:
+        role = (item.get("role") or "").lower()
+        text = (item.get("content") or "").strip()
+        if not text:
+            continue
+        if role == "system":
+            system_text += ("\n" if system_text else "") + text
+            continue
+        contents.append({
+            "role": "model" if role == "assistant" else "user",
+            "parts": [{"text": text}],
+        })
+
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.25,
+            "maxOutputTokens": MEDBOT_MAX_TOKENS,
+        },
+    }
+    if system_text:
+        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+
+    models = []
+    for model in [GEMINI_MODEL, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]:
+        if model and model not in models:
+            models.append(model)
+
+    last_detail = ""
+
+    for model in models:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:streamGenerateContent?alt=sse"
+        )
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "User-Agent": "MedQ-Backend",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=MEDBOT_AI_TIMEOUT) as response:
+                yield _sse_event({"type": "meta", "model": model})
+                accumulated = ""
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    raw_json = line[5:].strip()
+                    if not raw_json:
+                        continue
+                    try:
+                        data = json.loads(raw_json)
+                    except Exception:
+                        continue
+
+                    try:
+                        parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
+                    except Exception:
+                        parts = []
+
+                    text = "".join(
+                        part.get("text", "")
+                        for part in parts
+                        if isinstance(part, dict) and part.get("text")
+                    )
+                    if not text:
+                        continue
+
+                    # Gemini usually sends deltas. This also handles cumulative
+                    # chunks without duplicating already-rendered text.
+                    if accumulated and text.startswith(accumulated):
+                        delta = text[len(accumulated):]
+                        accumulated = text
+                    else:
+                        delta = text
+                        accumulated += text
+
+                    if delta:
+                        yield _sse_event({"type": "delta", "text": delta})
+
+                yield _sse_event({"type": "done", "model": model})
+                return
+
+        except urllib.error.HTTPError as exc:
+            try:
+                last_detail = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                last_detail = str(exc)
+            print(f"Gemini streaming MedBot {model} error:", last_detail)
+
+            if exc.code == 429:
+                yield _sse_event({
+                    "type": "error",
+                    "message": "Gemini is temporarily rate-limited. Please try again shortly.",
+                })
+                return
+            if exc.code in (400, 403, 404):
+                continue
+            yield _sse_event({"type": "error", "message": f"Gemini returned an error ({exc.code})."})
+            return
+        except Exception as exc:
+            last_detail = str(exc)
+            print(f"Gemini streaming MedBot {model} connection error:", last_detail)
+            continue
+
+    yield _sse_event({
+        "type": "error",
+        "message": "MedBot could not connect to an available Gemini model.",
+    })
+
 def trigger_github_workflow(
     book_id: str,
     file_key: str,
@@ -929,6 +1078,149 @@ def generate_questions_on_demand(
         "count": request.count,
     }
 
+
+
+@app.post("/api/medbot/stream")
+def medbot_stream(
+    request: MedBotRequest,
+    authorization: Optional[str] = Header(default=None)
+):
+    """Fast ChatGPT/Gemini-style MedBot with streamed output.
+
+    General medical questions go straight to Gemini. The large MedQ textbook
+    library is searched only when the student explicitly asks for book/library
+    grounding, which removes the main source of delay.
+    """
+    require_authenticated_user(authorization)
+
+    message = (request.message or "").strip()
+    if len(message) < 2:
+        raise HTTPException(status_code=400, detail="Please enter a question.")
+    if len(message) > 5000:
+        raise HTTPException(status_code=400, detail="Question is too long.")
+
+    supabase = get_supabase()
+    question_context = ""
+    preferred_book_id = request.book_id
+    search_text = message
+
+    # Practice question context is a small single-row lookup and stays fast.
+    if request.question_id:
+        try:
+            result = (
+                supabase.table("questions")
+                .select("stem,topic,subtopic,chapter,explanation,book_id")
+                .eq("id", request.question_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                q = result.data[0]
+                if not preferred_book_id:
+                    preferred_book_id = q.get("book_id")
+                stem = q.get("stem") or ""
+                topic = q.get("topic") or ""
+                subtopic = q.get("subtopic") or ""
+                search_text = " ".join([message, stem, topic, subtopic])
+                question_context = f"Practice question:\n{stem}\n"
+                if q.get("explanation"):
+                    question_context += f"Existing explanation:\n{q.get('explanation')}\n"
+        except Exception as exc:
+            print("Unable to load practice question context:", str(exc))
+
+    source_items = []
+    context_sections = []
+
+    # Critical performance change: do NOT scan book_chunks for ordinary chat.
+    # Only do it when the user explicitly requests textbook/library grounding.
+    if medbot_should_use_library(message):
+        try:
+            chunks = load_medbot_chunks(
+                supabase,
+                book_id=preferred_book_id,
+                max_rows=min(MEDBOT_MAX_CHUNKS, 600),
+            )
+            relevant = rank_medbot_chunks(chunks, search_text, limit=min(MEDBOT_TOP_CHUNKS, 3))
+            if relevant:
+                book_ids = [str(c.get("book_id")) for c in relevant if c.get("book_id")]
+                titles = load_book_titles(supabase, book_ids)
+                total_chars = 0
+                seen = set()
+                for i, chunk in enumerate(relevant, start=1):
+                    body = get_chunk_text(chunk)
+                    if not body:
+                        continue
+                    remaining = min(MEDBOT_CONTEXT_CHARS, 6500) - total_chars
+                    if remaining <= 0:
+                        break
+                    body = body[:remaining]
+                    total_chars += len(body)
+                    bid = str(chunk.get("book_id") or "")
+                    title = titles.get(bid) or "MedQ textbook"
+                    chapter = get_chunk_chapter(chunk)
+                    context_sections.append(
+                        f"REFERENCE {i}: {title}" + (f" | {chapter}" if chapter else "") + f"\n{body}"
+                    )
+                    key = (title, chapter)
+                    if key not in seen:
+                        seen.add(key)
+                        item = {"book_title": title}
+                        if chapter:
+                            item["chapter"] = chapter
+                        source_items.append(item)
+        except Exception as exc:
+            print("Optional fast library retrieval skipped:", str(exc))
+
+    system_prompt = (
+        "You are MedBot, a fast conversational AI medical tutor for an MBBS student preparing "
+        "for AMC CAT MCQ, FMGE and NEET-PG. Behave like a high-quality integrated Gemini/ChatGPT "
+        "medical assistant: answer the question directly, keep context across turns, and adapt depth "
+        "to the student's wording. Start concise, then add detail when useful. For AMC emphasize "
+        "clinical reasoning, safety, next-best-step, investigations and management. For FMGE/NEET-PG "
+        "include high-yield facts and clinical application. Explain simply first, then precise medical "
+        "terms. For MCQs explain why the best answer wins and important distractors lose. You can make "
+        "mnemonics, tables, differentials and mini-quizzes when asked. Do not mention page numbers. "
+        "Uploaded textbook excerpts, when supplied, are optional reference context rather than a limit. "
+        "Do not say you are searching the library unless library excerpts were actually supplied. "
+        "This is educational information, not personal medical care."
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    if request.conversation:
+        for item in request.conversation[-6:]:
+            role = (item.role or "").lower()
+            content = (item.content or "").strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content[:2200]})
+
+    user_prompt = message
+    if question_context:
+        user_prompt += "\n\n" + question_context
+    if context_sections:
+        user_prompt += (
+            "\n\nUse these MedQ textbook excerpts when helpful:\n\n"
+            + "\n\n---\n\n".join(context_sections)
+        )
+    messages.append({"role": "user", "content": user_prompt})
+
+    def event_stream():
+        # Send metadata immediately so the browser knows the request is alive.
+        yield _sse_event({
+            "type": "ready",
+            "sources": source_items,
+            "knowledge_mode": "ai_plus_library" if source_items else "ai",
+        })
+        yield from stream_gemini_medbot(messages)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 @app.post("/api/medbot/chat")
 def medbot_chat(
