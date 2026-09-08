@@ -121,6 +121,84 @@ function shuffleArray(array) {
 }
 
 
+
+function cleanFilterLabel(value, kind = 'topic') {
+  const label = String(value || '').replace(/\s+/g, ' ').trim()
+
+  if (!label) return null
+  if (label.length < 3 || label.length > 110) return null
+
+  const lower = label.toLowerCase()
+
+  const exactJunk = new Set([
+    'preface',
+    'foreword',
+    'contents',
+    'table of contents',
+    'contributors',
+    'acknowledgments',
+    'acknowledgements',
+    'copyright',
+    'index',
+    'part 1',
+    'part i'
+  ])
+
+  if (exactJunk.has(lower)) return null
+
+  // Common extraction artefacts such as e42, e46, e49, etc.
+  if (/^e\d+[a-z]?$/i.test(label)) return null
+  if (/^(part|section|chapter)\s*[ivxlcdm\d]+$/i.test(label)) return null
+  if (/^\d+(\.\d+)*$/.test(label)) return null
+
+  // Non-clinical front/back matter and media/atlas artefacts.
+  const junkPhrases = [
+    'video library',
+    'atlas of',
+    'about the author',
+    'about the editor',
+    'editorial board',
+    'list of contributors',
+    'list of authors',
+    'permissions',
+    'disclaimer',
+    'dedication',
+    'abbreviations',
+    'appendix',
+    'bibliography'
+  ]
+
+  if (junkPhrases.some((phrase) => lower.includes(phrase))) return null
+
+  // Topics should be concise clinical labels rather than extracted sentences.
+  if (kind === 'topic') {
+    const words = label.split(' ').filter(Boolean)
+    if (words.length > 12) return null
+    if (/[?!]$/.test(label)) return null
+  }
+
+  return label
+}
+
+function uniqueCleanLabels(values, kind) {
+  const seen = new Map()
+
+  values.forEach((value) => {
+    const cleaned = cleanFilterLabel(value, kind)
+    if (!cleaned) return
+
+    const key = cleaned.toLowerCase()
+    if (!seen.has(key)) {
+      seen.set(key, cleaned)
+    }
+  })
+
+  return [...seen.values()].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' })
+  )
+}
+
+
 export default function Practice({
   session
 }) {
@@ -620,16 +698,12 @@ export default function Practice({
 
 
   const chapters = useMemo(() => {
-    return [
-      ...new Set(
-        baseFilteredQuestions
-          .map(
-            (question) =>
-              question.chapter
-          )
-          .filter(Boolean)
-      )
-    ].sort()
+    return uniqueCleanLabels(
+      baseFilteredQuestions.map(
+        (question) => question.chapter
+      ),
+      'chapter'
+    )
   }, [
     baseFilteredQuestions
   ])
@@ -652,16 +726,12 @@ export default function Practice({
 
 
   const topics = useMemo(() => {
-    return [
-      ...new Set(
-        chapterFilteredQuestions
-          .map(
-            (question) =>
-              question.topic
-          )
-          .filter(Boolean)
-      )
-    ].sort()
+    return uniqueCleanLabels(
+      chapterFilteredQuestions.map(
+        (question) => question.topic
+      ),
+      'topic'
+    )
   }, [
     chapterFilteredQuestions
   ])
@@ -711,6 +781,32 @@ export default function Practice({
   }, [
     chapter
   ])
+
+  useEffect(() => {
+    if (
+      chapter !== 'all' &&
+      !chapters.includes(chapter)
+    ) {
+      setChapter('all')
+    }
+  }, [
+    chapter,
+    chapters
+  ])
+
+
+  useEffect(() => {
+    if (
+      topic !== 'all' &&
+      !topics.includes(topic)
+    ) {
+      setTopic('all')
+    }
+  }, [
+    topic,
+    topics
+  ])
+
 
 
   // =======================================================
