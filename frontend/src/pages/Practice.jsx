@@ -36,6 +36,10 @@ import {
 import { supabase } from '../lib/supabase'
 import Logo from '../components/Logo'
 
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  'https://medq-api-6vm5.onrender.com'
+
 
 const QUESTION_COUNT_OPTIONS = [
   10,
@@ -218,6 +222,27 @@ export default function Practice({
     books,
     setBooks
   ] = useState([])
+
+
+  const [
+    bookChunks,
+    setBookChunks
+  ] = useState([])
+
+  const [
+    generatingQuestions,
+    setGeneratingQuestions
+  ] = useState(false)
+
+  const [
+    generationMessage,
+    setGenerationMessage
+  ] = useState('')
+
+  const [
+    generationCount,
+    setGenerationCount
+  ] = useState(20)
 
   const [
     loading,
