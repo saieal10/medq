@@ -109,12 +109,11 @@ export default function Dashboard({ session }) {
             Practice
           </button>
 
-          <button>
+          <button
+            onClick={() => navigate('/mistakes')}
+          >
             <RotateCcw size={18} />
             Mistakes
-            <span className="soon">
-              soon
-            </span>
           </button>
 
           <button
