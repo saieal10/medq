@@ -2332,40 +2332,7 @@ export default function Practice({
                                 }
 
                               </strong>
-
-
-                              {
-                                currentQuestion
-                                  .source_page &&
-                                (
-
-                                  <small>
-
-                                    Page {
-                                      currentQuestion
-                                        .source_page
-                                    }
-
-                                    {
-                                      currentQuestion
-                                        .source_page_end &&
-                                      currentQuestion
-                                        .source_page_end !==
-                                        currentQuestion
-                                          .source_page
-                                        ? `–${
-                                            currentQuestion
-                                              .source_page_end
-                                          }`
-                                        : ''
-                                    }
-
-                                  </small>
-
-                                )
-                              }
-
-                            </div>
+</div>
 
                           </div>
 
