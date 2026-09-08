@@ -26,7 +26,7 @@ export default function MedBot({
       {
         role: 'assistant',
         content:
-          'Hi, I’m MedBot. Ask me anything from the textbooks processed in your MedQ library. I’ll explain it in an AMC/FMGE-focused way.'
+          'Hi, I’m MedBot — your AI medical tutor. Ask me anything in medicine, AMC, FMGE or NEET-PG. I can also use your MedQ textbook library when it helps.'
       }
     ])
 
@@ -266,7 +266,7 @@ export default function MedBot({
       {
         role: 'assistant',
         content:
-          'Chat cleared. Ask me anything from your processed MedQ textbooks.'
+          'Chat cleared. Ask me any medical, AMC, FMGE or NEET-PG question.'
       }
     ])
 
