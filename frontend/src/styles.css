@@ -2578,3 +2578,511 @@ a{
   }
 
 }
+/* =========================================================
+   MEDBOT
+========================================================= */
+
+.medbot-page{
+  min-height:100vh;
+  background:
+    radial-gradient(
+      circle at 15% 0,
+      rgba(95,224,181,.055),
+      transparent 34%
+    ),
+    var(--bg);
+  color:var(--text);
+  padding:28px;
+}
+
+.medbot-header{
+  width:min(1500px,100%);
+  margin:0 auto 18px;
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:20px;
+}
+
+.medbot-back{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  color:#8197ae;
+  font-size:12px;
+  font-weight:700;
+  margin-bottom:15px;
+  transition:color .16s ease;
+}
+
+.medbot-back:hover{
+  color:#dce8f4;
+}
+
+.medbot-title-row{
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+
+.medbot-logo{
+  width:48px;
+  height:48px;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  background:linear-gradient(
+    135deg,
+    var(--accent),
+    #86efd0
+  );
+  color:#052018;
+  font:800 20px Manrope;
+  box-shadow:0 10px 30px rgba(95,224,181,.13);
+}
+
+.medbot-title-row h1{
+  margin:0;
+  font:800 30px Manrope;
+  letter-spacing:-.025em;
+}
+
+.medbot-title-row p{
+  margin:4px 0 0;
+  color:var(--muted);
+  font-size:12px;
+}
+
+.medbot-clear-button{
+  border:1px solid #21364c;
+  background:#0b1724;
+  color:#9eb1c5;
+  padding:10px 13px;
+  border-radius:10px;
+  font-size:11px;
+  font-weight:700;
+  cursor:pointer;
+  transition:
+    background .16s ease,
+    border-color .16s ease,
+    color .16s ease;
+}
+
+.medbot-clear-button:hover{
+  background:#102033;
+  border-color:#35516b;
+  color:#e2edf7;
+}
+
+.medbot-shell{
+  width:min(1500px,100%);
+  margin:auto;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 305px;
+  gap:18px;
+  align-items:start;
+}
+
+.medbot-chat{
+  min-height:calc(100vh - 145px);
+  display:flex;
+  flex-direction:column;
+  border:1px solid #1b2d42;
+  background:#0b1724;
+  border-radius:20px;
+  overflow:hidden;
+  box-shadow:0 20px 55px rgba(0,0,0,.14);
+}
+
+.medbot-messages{
+  flex:1;
+  min-height:560px;
+  max-height:calc(100vh - 295px);
+  overflow-y:auto;
+  padding:28px;
+  display:flex;
+  flex-direction:column;
+  gap:18px;
+  scrollbar-width:thin;
+  scrollbar-color:#294057 transparent;
+}
+
+.medbot-message{
+  max-width:84%;
+  border-radius:17px;
+  padding:16px 18px;
+}
+
+.medbot-message-assistant{
+  align-self:flex-start;
+  border:1px solid #1f3349;
+  background:#091522;
+}
+
+.medbot-message-user{
+  align-self:flex-end;
+  border:1px solid rgba(95,224,181,.28);
+  background:linear-gradient(
+    135deg,
+    rgba(95,224,181,.11),
+    rgba(95,224,181,.055)
+  );
+}
+
+.medbot-message-label{
+  margin-bottom:8px;
+  color:#6f869d;
+  font-size:8px;
+  font-weight:800;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+}
+
+.medbot-message-assistant .medbot-message-label{
+  color:var(--accent);
+}
+
+.medbot-message-content{
+  color:#dce7f2;
+  font-size:14px;
+  line-height:1.72;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+
+.medbot-message-user .medbot-message-content{
+  color:#eff8f5;
+}
+
+.medbot-sources{
+  margin-top:16px;
+  padding-top:13px;
+  border-top:1px solid #1d3044;
+  display:grid;
+  gap:7px;
+}
+
+.medbot-sources-title{
+  color:#657d95;
+  font-size:8px;
+  font-weight:800;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+}
+
+.medbot-source{
+  border:1px solid #1f344a;
+  background:#0d1a28;
+  padding:9px 10px;
+  border-radius:9px;
+  color:#8299b0;
+  font-size:10px;
+  line-height:1.45;
+}
+
+.medbot-source strong{
+  color:#c9d7e4;
+  font-weight:700;
+}
+
+.medbot-thinking{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-height:26px;
+}
+
+.medbot-thinking span{
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:var(--accent);
+  opacity:.35;
+  animation:medbot-dot 1.2s infinite ease-in-out;
+}
+
+.medbot-thinking span:nth-child(2){
+  animation-delay:.14s;
+}
+
+.medbot-thinking span:nth-child(3){
+  animation-delay:.28s;
+}
+
+.medbot-thinking small{
+  margin-left:7px;
+  color:#71879e;
+  font-size:10px;
+}
+
+@keyframes medbot-dot{
+  0%,
+  60%,
+  100%{
+    transform:translateY(0);
+    opacity:.28;
+  }
+
+  30%{
+    transform:translateY(-4px);
+    opacity:1;
+  }
+}
+
+.medbot-error{
+  margin:0 22px 12px;
+  border:1px solid rgba(255,141,141,.25);
+  background:rgba(255,141,141,.075);
+  color:#ffb2b2;
+  padding:11px 13px;
+  border-radius:10px;
+  font-size:11px;
+  line-height:1.45;
+}
+
+.medbot-composer{
+  margin-top:auto;
+  padding:18px 20px 10px;
+  border-top:1px solid #192c40;
+  background:#091522;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:11px;
+  align-items:end;
+}
+
+.medbot-composer textarea{
+  width:100%;
+  min-height:72px;
+  max-height:180px;
+  resize:vertical;
+  border:1px solid #22374e;
+  background:#07121e;
+  color:#e6eef7;
+  padding:13px 14px;
+  border-radius:12px;
+  outline:none;
+  font:400 13px/1.5 'DM Sans',sans-serif;
+  transition:
+    border-color .16s ease,
+    box-shadow .16s ease;
+}
+
+.medbot-composer textarea::placeholder{
+  color:#61788f;
+}
+
+.medbot-composer textarea:focus{
+  border-color:#4ec7a0;
+  box-shadow:0 0 0 3px rgba(78,199,160,.07);
+}
+
+.medbot-composer textarea:disabled{
+  opacity:.6;
+  cursor:not-allowed;
+}
+
+.medbot-send-button{
+  min-width:130px;
+  min-height:46px;
+  border:0;
+  border-radius:11px;
+  background:var(--accent);
+  color:#052018;
+  padding:12px 15px;
+  font-weight:800;
+  font-size:12px;
+  cursor:pointer;
+  transition:
+    transform .16s ease,
+    background .16s ease,
+    opacity .16s ease;
+}
+
+.medbot-send-button:hover:not(:disabled){
+  transform:translateY(-1px);
+  background:var(--accent2);
+}
+
+.medbot-send-button:disabled{
+  opacity:.42;
+  cursor:not-allowed;
+}
+
+.medbot-hint{
+  padding:0 20px 16px;
+  background:#091522;
+  color:#5d738a;
+  font-size:9px;
+}
+
+.medbot-sidebar{
+  display:grid;
+  gap:13px;
+  position:sticky;
+  top:22px;
+}
+
+.medbot-info-card{
+  border:1px solid #1c3045;
+  background:#0b1724;
+  border-radius:16px;
+  padding:18px;
+}
+
+.medbot-info-card h3{
+  margin:0 0 13px;
+  font:700 14px Manrope;
+}
+
+.medbot-info-card p{
+  margin:0 0 11px;
+  color:#8197ae;
+  font-size:11px;
+  line-height:1.58;
+}
+
+.medbot-info-card p:last-child{
+  margin-bottom:0;
+}
+
+.medbot-info-card button{
+  width:100%;
+  border:1px solid #21364c;
+  background:#091522;
+  color:#9eb1c5;
+  padding:10px 11px;
+  margin-top:7px;
+  border-radius:10px;
+  text-align:left;
+  font-size:10px;
+  line-height:1.4;
+  cursor:pointer;
+  transition:
+    background .16s ease,
+    border-color .16s ease,
+    color .16s ease;
+}
+
+.medbot-info-card button:hover{
+  background:#102033;
+  border-color:#36536d;
+  color:#dce7f2;
+}
+
+.medbot-library-link{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  margin-top:5px;
+  color:#87e8c8;
+  font-size:11px;
+  font-weight:700;
+}
+
+.medbot-library-link:hover{
+  color:#acf3dc;
+}
+
+/* Keep source page metadata internal, but never show it to students. */
+.question-source-card small,
+.source-page{
+  display:none !important;
+}
+
+@media(max-width:1100px){
+  .medbot-shell{
+    grid-template-columns:1fr 255px;
+  }
+}
+
+@media(max-width:900px){
+  .medbot-page{
+    padding:20px;
+  }
+
+  .medbot-shell{
+    grid-template-columns:1fr;
+  }
+
+  .medbot-sidebar{
+    position:static;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+
+  .medbot-chat{
+    min-height:auto;
+  }
+
+  .medbot-messages{
+    min-height:500px;
+    max-height:65vh;
+  }
+}
+
+@media(max-width:700px){
+  .medbot-header{
+    align-items:flex-start;
+  }
+
+  .medbot-sidebar{
+    grid-template-columns:1fr;
+  }
+
+  .medbot-message{
+    max-width:92%;
+  }
+
+  .medbot-composer{
+    grid-template-columns:1fr;
+  }
+
+  .medbot-send-button{
+    width:100%;
+  }
+}
+
+@media(max-width:520px){
+  .medbot-page{
+    padding:14px;
+  }
+
+  .medbot-header{
+    flex-direction:column;
+    align-items:stretch;
+  }
+
+  .medbot-clear-button{
+    align-self:flex-start;
+  }
+
+  .medbot-title-row h1{
+    font-size:25px;
+  }
+
+  .medbot-chat{
+    border-radius:16px;
+  }
+
+  .medbot-messages{
+    min-height:430px;
+    padding:17px;
+  }
+
+  .medbot-message{
+    max-width:96%;
+    padding:14px;
+  }
+
+  .medbot-message-content{
+    font-size:13px;
+  }
+
+  .medbot-composer{
+    padding:14px 14px 8px;
+  }
+
+  .medbot-hint{
+    padding:0 14px 13px;
+  }
+}
