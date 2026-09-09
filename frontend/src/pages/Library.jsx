@@ -19,6 +19,51 @@ import Logo from '../components/Logo'
 
 const API_URL = import.meta.env.VITE_API_URL
 
+
+const AMC_SUBJECTS = [
+  'Adult Health — Medicine',
+  'Adult Health — Surgery',
+  "Women's Health — Obstetrics & Gynaecology",
+  'Child Health — Paediatrics',
+  'Mental Health — Psychiatry',
+  'Population Health & Ethics',
+]
+
+const FMGE_NEETPG_SUBJECTS = [
+  'Anatomy',
+  'Physiology',
+  'Biochemistry',
+  'Pathology',
+  'Pharmacology',
+  'Microbiology',
+  'Forensic Medicine',
+  'Community Medicine (PSM)',
+  'Medicine',
+  'Surgery',
+  'Obstetrics & Gynaecology',
+  'Pediatrics',
+  'Orthopedics',
+  'ENT',
+  'Ophthalmology',
+  'Dermatology',
+  'Psychiatry',
+  'Radiology',
+  'Anaesthesiology',
+]
+
+const EXAM_TRACKS = {
+  amc: {
+    label: 'AMC',
+    description: 'Australian Medical Council — clinical reasoning and next-best-step preparation',
+    subjects: AMC_SUBJECTS,
+  },
+  fmge_neetpg: {
+    label: 'FMGE / NEET-PG',
+    description: 'Indian postgraduate entrance preparation — complete MBBS subject coverage',
+    subjects: FMGE_NEETPG_SUBJECTS,
+  },
+}
+
 // Only this account can upload books.
 // Both MedQ users can see and use the shared library.
 const ADMIN_EMAILS = [
@@ -34,6 +79,7 @@ export default function Library({ session }) {
 
   const [file, setFile] = useState(null)
   const [title, setTitle] = useState('')
+  const [examTrack, setExamTrack] = useState('fmge_neetpg')
   const [subject, setSubject] = useState('Medicine')
 
   const [uploading, setUploading] = useState(false)
@@ -96,6 +142,7 @@ export default function Library({ session }) {
           id,
           title,
           subject,
+          exam_track,
           file_size_bytes,
           status,
           processing_stage,
@@ -266,6 +313,7 @@ export default function Library({ session }) {
           body: JSON.stringify({
             title: title.trim(),
             subject: subject || null,
+            exam_track: examTrack,
             file_key,
             file_size_bytes: file.size,
             uploaded_by: session.user.id
@@ -518,7 +566,39 @@ export default function Library({ session }) {
               </div>
 
               <div>
+                <label
+                  style={{
+                    display: 'block',
+                    marginBottom: '7px'
+                  }}
+                >
+                  Exam / book category
+                </label>
 
+                <select
+                  value={examTrack}
+                  onChange={(e) => {
+                    const nextTrack = e.target.value
+                    setExamTrack(nextTrack)
+                    setSubject(EXAM_TRACKS[nextTrack].subjects[0])
+                  }}
+                  disabled={uploading}
+                  style={{
+                    width: '100%',
+                    padding: '13px',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <option value="amc">🇦🇺 AMC</option>
+                  <option value="fmge_neetpg">🇮🇳 FMGE / NEET-PG</option>
+                </select>
+
+                <small style={{ display: 'block', marginTop: '7px' }}>
+                  {EXAM_TRACKS[examTrack].description}
+                </small>
+              </div>
+
+              <div>
                 <label
                   style={{
                     display: 'block',
@@ -538,45 +618,12 @@ export default function Library({ session }) {
                     borderRadius: '10px'
                   }}
                 >
-
-                  <option value="Medicine">
-                    Medicine
-                  </option>
-
-                  <option value="Surgery">
-                    Surgery
-                  </option>
-
-                  <option value="OBGYN">
-                    OBGYN
-                  </option>
-
-                  <option value="Pediatrics">
-                    Pediatrics
-                  </option>
-
-                  <option value="Psychiatry">
-                    Psychiatry
-                  </option>
-
-                  <option value="Pharmacology">
-                    Pharmacology
-                  </option>
-
-                  <option value="Pathology">
-                    Pathology
-                  </option>
-
-                  <option value="Microbiology">
-                    Microbiology
-                  </option>
-
-                  <option value="General">
-                    General / Mixed
-                  </option>
-
+                  {EXAM_TRACKS[examTrack].subjects.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
                 </select>
-
               </div>
 
               <button
@@ -740,15 +787,19 @@ export default function Library({ session }) {
               }}
             >
 
-              {books.map((book) => (
+              <BookGroup
+                title="🇦🇺 AMC BOOKS"
+                description="Books assigned to the AMC preparation track."
+                books={books.filter((book) => getBookTrack(book) === 'amc')}
+                onRefresh={() => loadBooks({ silent: true })}
+              />
 
-                <BookRow
-                  key={book.id}
-                  book={book}
-                  onRefresh={() => loadBooks({ silent: true })}
-                />
-
-              ))}
+              <BookGroup
+                title="🇮🇳 FMGE / NEET-PG BOOKS"
+                description="Books assigned to the FMGE / NEET-PG preparation track."
+                books={books.filter((book) => getBookTrack(book) === 'fmge_neetpg')}
+                onRefresh={() => loadBooks({ silent: true })}
+              />
 
             </div>
 
@@ -759,6 +810,51 @@ export default function Library({ session }) {
       </main>
 
     </div>
+  )
+}
+
+
+function getBookTrack(book) {
+  if (book?.exam_track === 'amc' || book?.exam_track === 'fmge_neetpg') {
+    return book.exam_track
+  }
+
+  const subject = String(book?.subject || '').trim().toLowerCase()
+  const fmgeMatch = FMGE_NEETPG_SUBJECTS.some(
+    (item) => item.toLowerCase() === subject
+  )
+
+  return fmgeMatch ? 'fmge_neetpg' : 'amc'
+}
+
+function getBookTrackLabel(book) {
+  return EXAM_TRACKS[getBookTrack(book)]?.label || 'AMC'
+}
+
+function BookGroup({ title, description, books, onRefresh }) {
+  return (
+    <section
+      style={{
+        display: 'grid',
+        gap: '10px',
+        marginTop: '18px'
+      }}
+    >
+      <div style={{ padding: '4px 2px' }}>
+        <div className="panel-kicker">{title}</div>
+        <small>{description}</small>
+      </div>
+
+      {books.length === 0 ? (
+        <div className="panel" style={{ padding: '18px' }}>
+          <small>No books in this category yet.</small>
+        </div>
+      ) : (
+        books.map((book) => (
+          <BookRow key={book.id} book={book} onRefresh={onRefresh} />
+        ))
+      )}
+    </section>
   )
 }
 
@@ -809,6 +905,8 @@ function BookRow({ book, onRefresh }) {
               }}
             >
               <small>
+                {getBookTrackLabel(book)}
+                {' • '}
                 {book.subject || 'General'}
               </small>
 
