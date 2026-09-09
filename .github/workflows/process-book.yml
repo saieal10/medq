@@ -1,4 +1,5 @@
-name: Process MedQ Book
+
+name: MedQ Process Book
 
 on:
   workflow_dispatch:
@@ -8,13 +9,17 @@ on:
         required: true
         type: string
       file_key:
-        description: "Cloudflare R2 object key"
+        description: "R2 object key"
         required: true
         type: string
       subject:
-        description: "Book subject"
+        description: "Main subject"
+        required: true
+        type: string
+      exam_track:
+        description: "AMC or FMGE_NEET_PG"
         required: false
-        default: "General"
+        default: "FMGE_NEET_PG"
         type: string
 
 jobs:
@@ -23,39 +28,30 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install system OCR tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            tesseract-ocr \
-            ghostscript \
-            qpdf
-
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            boto3 \
-            pymupdf \
-            requests \
-            supabase \
-            python-dotenv \
-            pillow \
-            pytesseract
+          pip install boto3 pymupdf pytesseract pillow requests supabase
 
-      - name: Process PDF and create MCQs
+      - name: Install OCR engine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+
+      - name: Run full-book question engine
         env:
-          BOOK_ID: ${{ github.event.inputs.book_id }}
-          FILE_KEY: ${{ github.event.inputs.file_key }}
-          BOOK_SUBJECT: ${{ github.event.inputs.subject }}
+          BOOK_ID: ${{ inputs.book_id }}
+          FILE_KEY: ${{ inputs.file_key }}
+          BOOK_SUBJECT: ${{ inputs.subject }}
+          BOOK_EXAM_TRACK: ${{ inputs.exam_track }}
 
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -65,7 +61,17 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
 
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
 
-        run: |
-          python worker/process_book.py
+          # Speed/quality controls.
+          CHUNK_SIZE: "18000"
+          QUESTIONS_PER_CHUNK: "8"
+          MAX_PARALLEL_AI: "3"
+          AI_RETRIES: "4"
+          AI_TIMEOUT: "150"
+          MCQ_MIN_DETECTED: "8"
+          MCQ_AI_BATCH: "20"
+          OCR_DPI: "150"
+
+        run: python worker/process_book.py
