@@ -171,6 +171,7 @@ class UploadRequest(BaseModel):
 class RegisterBookRequest(BaseModel):
     title: str
     subject: Optional[str] = None
+    exam_track: str = 'fmge_neetpg'
     file_key: str
     file_size_bytes: Optional[int] = None
     uploaded_by: str
@@ -991,7 +992,7 @@ def generate_questions_on_demand(
         books_result = (
             supabase
             .table("books")
-            .select("id,title,subject,status")
+            .select("id,title,subject,exam_track,status")
             .order("created_at", desc=True)
             .execute()
         )
@@ -1027,6 +1028,12 @@ def generate_questions_on_demand(
     preferred_id = (request.book_id or "").strip()
     hint = subject_hint(target_subject)
 
+    desired_track = {
+        'amc': 'amc',
+        'fmge': 'fmge_neetpg',
+        'mixed': None,
+    }.get(request.exam_mode)
+
     candidates = []
     if preferred_id:
         candidates.extend([book for book in books if book.get("id") == preferred_id])
@@ -1037,6 +1044,16 @@ def generate_questions_on_demand(
             if hint in str(book.get("subject") or "").lower()
             or str(book.get("subject") or "").lower() in hint
         ])
+
+    # Prefer books assigned to the same exam track. Mixed mode can use either.
+    if desired_track:
+        candidates = [
+            book for book in candidates
+            if book.get('exam_track') == desired_track
+        ] + [
+            book for book in books
+            if book.get('exam_track') == desired_track
+        ] + candidates
 
     candidates.extend(books)
 
@@ -1553,6 +1570,12 @@ def create_upload_url(
 # Register uploaded book
 # ---------------------------------------------------------
 
+BOOK_EXAM_TRACKS = {
+    'amc',
+    'fmge_neetpg',
+}
+
+
 @app.post("/api/books/register")
 def register_book(
     request: RegisterBookRequest
@@ -1560,12 +1583,22 @@ def register_book(
 
     supabase = get_supabase()
 
+    exam_track = (request.exam_track or "fmge_neetpg").strip().lower()
+    if exam_track not in BOOK_EXAM_TRACKS:
+        raise HTTPException(
+            status_code=400,
+            detail="exam_track must be amc or fmge_neetpg."
+        )
+
     record = {
         "title":
             request.title,
 
         "subject":
             request.subject,
+
+        "exam_track":
+            exam_track,
 
         "file_key":
             request.file_key,
