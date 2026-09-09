@@ -1,75 +1,103 @@
-name: MedQ Process ALL Library Books
+name: MedQ Process Book
 
 on:
   workflow_dispatch:
     inputs:
-      max_parallel:
-        description: "Books processed simultaneously"
+      book_id:
+        description: "Supabase book ID"
         required: true
-        default: "3"
         type: string
 
-jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.books.outputs.matrix }}
-    steps:
-      - name: Read all books from Supabase
-        id: books
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-        run: |
-          set -e
-          RESPONSE=$(curl -fsS "$SUPABASE_URL/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc" \
-            -H "apikey: $SUPABASE_SECRET_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SECRET_KEY")
-          MATRIX=$(echo "$RESPONSE" | jq -c '[.[] | select(.id != null and .file_key != null) | {book_id:(.id|tostring),file_key:(.file_key|tostring),subject:(.subject // "General"),exam_track:(.exam_track // "FMGE_NEET_PG")}]')
-          echo "Found $(echo "$MATRIX" | jq length) books"
-          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+      exam_mode:
+        description: "Exam mode"
+        required: true
+        type: choice
+        options:
+          - AMC
+          - FMGE
+          - BOTH
+        default: FMGE
 
-  process:
-    needs: prepare
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel) }}
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      target_subject:
+        description: "Optional target subject"
+        required: false
+        type: string
+
+      target_topic:
+        description: "Optional target topic"
+        required: false
+        type: string
+
+      target_subtopic:
+        description: "Optional target subtopic"
+        required: false
+        type: string
+
+      difficulty:
+        description: "Question difficulty"
+        required: true
+        type: choice
+        options:
+          - Easy
+          - Medium
+          - Hard
+          - Mixed
+        default: Mixed
+
+jobs:
+  process-book:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install boto3 pymupdf pytesseract pillow requests supabase
-      - name: Install OCR
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr
-      - name: Process book completely
+          sudo apt-get install -y \
+            poppler-utils \
+            tesseract-ocr \
+            tesseract-ocr-eng
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            requests \
+            supabase \
+            boto3 \
+            pypdf \
+            pdfplumber \
+            pymupdf \
+            pytesseract \
+            pillow
+
+      - name: Run full book processor
         env:
-          BOOK_ID: ${{ matrix.book_id }}
-          FILE_KEY: ${{ matrix.file_key }}
-          BOOK_SUBJECT: ${{ matrix.subject }}
-          BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CHUNK_SIZE: "18000"
-          QUESTIONS_PER_CHUNK: "8"
-          MAX_PARALLEL_AI: "3"
-          AI_RETRIES: "4"
-          AI_TIMEOUT: "150"
-          MCQ_MIN_DETECTED: "8"
-          MCQ_AI_BATCH: "30"
-          OCR_DPI: "150"
-        run: python worker/process_book.py
+          GEMINI_MODEL: gemini-3.5-flash
+
+          BOOK_ID: ${{ inputs.book_id }}
+          EXAM_MODE: ${{ inputs.exam_mode }}
+          TARGET_SUBJECT: ${{ inputs.target_subject }}
+          TARGET_TOPIC: ${{ inputs.target_topic }}
+          TARGET_SUBTOPIC: ${{ inputs.target_subtopic }}
+          DIFFICULTY: ${{ inputs.difficulty }}
+
+        run: |
+          python worker/process_book.py
