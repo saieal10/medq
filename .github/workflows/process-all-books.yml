@@ -1,75 +1,96 @@
-name: MedQ Process ALL Library Books
+name: MedQ Background Question Bank
 
 on:
   workflow_dispatch:
-    inputs:
-      max_parallel:
-        description: "Books processed simultaneously"
-        required: true
-        default: "3"
-        type: string
+  schedule:
+    - cron: "*/30 * * * *"
+
+concurrency:
+  group: medq-background-question-bank
+  cancel-in-progress: false
 
 jobs:
-  prepare:
+  find-books:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.books.outputs.matrix }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
     steps:
-      - name: Read all books from Supabase
-        id: books
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      - id: books
+        shell: bash
         run: |
-          set -e
-          RESPONSE=$(curl -fsS "$SUPABASE_URL/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc" \
-            -H "apikey: $SUPABASE_SECRET_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SECRET_KEY")
-          MATRIX=$(echo "$RESPONSE" | jq -c '[.[] | select(.id != null and .file_key != null) | {book_id:(.id|tostring),file_key:(.file_key|tostring),subject:(.subject // "General"),exam_track:(.exam_track // "FMGE_NEET_PG")}]')
-          echo "Found $(echo "$MATRIX" | jq length) books"
-          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import os, json, urllib.request
+          url=os.environ["SUPABASE_URL"].rstrip("/")+"/rest/v1/books?select=id,file_key,subject,exam_track,status&file_key=not.is.null"
+          req=urllib.request.Request(url,headers={
+            "apikey":os.environ["SUPABASE_SECRET_KEY"],
+            "Authorization":"Bearer "+os.environ["SUPABASE_SECRET_KEY"]
+          })
+          data=json.load(urllib.request.urlopen(req,timeout=30))
+          books=[]
+          for b in data:
+            if b.get("id") and b.get("file_key"):
+              books.append({
+                "book_id":b["id"],
+                "file_key":b["file_key"],
+                "subject":b.get("subject") or "General",
+                "exam_track":b.get("exam_track") or "fmge_neetpg"
+              })
+          print("Found",len(books),"books")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+            f.write("matrix="+json.dumps({"include":books})+"\n")
+          PY
 
-  process:
-    needs: prepare
+  process-books:
+    needs: find-books
+    if: ${{ needs.find-books.outputs.matrix != '' && needs.find-books.outputs.matrix != '{"include":[]}' }}
     strategy:
+      max-parallel: 2
       fail-fast: false
-      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel) }}
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.find-books.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+
+    env:
+      BOOK_ID: ${{ matrix.book_id }}
+      FILE_KEY: ${{ matrix.file_key }}
+      BOOK_SUBJECT: ${{ matrix.subject }}
+      BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
+
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-3.5-flash
+
+      QUESTIONS_PER_CHUNK: 8
+      AI_PASSES_PER_CHUNK: 2
+      AI_RETRIES: 4
+      AI_TIMEOUT: 150
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install boto3 pymupdf pytesseract pillow requests supabase
-      - name: Install OCR
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr
-      - name: Process book completely
-        env:
-          BOOK_ID: ${{ matrix.book_id }}
-          FILE_KEY: ${{ matrix.file_key }}
-          BOOK_SUBJECT: ${{ matrix.subject }}
-          BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
-          CHUNK_SIZE: "18000"
-          QUESTIONS_PER_CHUNK: "8"
-          MAX_PARALLEL_AI: "3"
-          AI_RETRIES: "4"
-          AI_TIMEOUT: "150"
-          MCQ_MIN_DETECTED: "8"
-          MCQ_AI_BATCH: "30"
-          OCR_DPI: "150"
+          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
+
+      - name: Process entire book into permanent question bank
         run: python worker/process_book.py
