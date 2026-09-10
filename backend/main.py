@@ -978,8 +978,6 @@ def generate_questions_on_demand(
         query = query.eq("chapter", request.chapter)
     if request.topic and request.topic != "all":
         query = query.eq("topic", request.topic)
-    if request.subtopic and request.subtopic != "all":
-        query = query.eq("subtopic", request.subtopic)
     if request.difficulty and request.difficulty != "all":
         query = query.eq("difficulty", request.difficulty)
 
@@ -1030,7 +1028,7 @@ def medbot_stream(
         try:
             result = (
                 supabase.table("questions")
-                .select("stem,topic,subtopic,chapter,explanation,book_id")
+                .select("stem,topic,chapter,explanation,book_id")
                 .eq("id", request.question_id)
                 .limit(1)
                 .execute()
@@ -1041,8 +1039,7 @@ def medbot_stream(
                     preferred_book_id = q.get("book_id")
                 stem = q.get("stem") or ""
                 topic = q.get("topic") or ""
-                subtopic = q.get("subtopic") or ""
-                search_text = " ".join([message, stem, topic, subtopic])
+                search_text = " ".join([message, stem, topic])
                 question_context = f"Practice question:\n{stem}\n"
                 if q.get("explanation"):
                     question_context += f"Existing explanation:\n{q.get('explanation')}\n"
