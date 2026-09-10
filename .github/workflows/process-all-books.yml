@@ -86,7 +86,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r worker/requirements.txt
+          python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
 
       - name: Process and expand permanent question bank
         run: python worker/process_book.py
