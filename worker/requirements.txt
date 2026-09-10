@@ -1,0 +1,10 @@
+boto3
+pillow
+pypdf
+pdfplumber
+pymupdf
+pytesseract
+requests
+python-dotenv
+supabase
+google-generativeai
