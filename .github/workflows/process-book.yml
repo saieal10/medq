@@ -1,41 +1,63 @@
-name: MedQ Process Book
+name: MedQ Background Question Bank
 
 on:
   workflow_dispatch:
-    inputs:
-      book_id:
-        description: "Supabase Book ID"
-        required: true
-        type: string
+  schedule:
+    - cron: "*/30 * * * *"
 
-      file_key:
-        description: "Cloudflare R2 file key"
-        required: true
-        type: string
-
-      subject:
-        description: "Book subject"
-        required: true
-        type: string
-
-      exam_track:
-        description: "Exam track"
-        required: true
-        type: choice
-        options:
-          - fmge_neetpg
-          - amc
+concurrency:
+  group: medq-background-question-bank
+  cancel-in-progress: false
 
 jobs:
-  process-book:
+  find-books:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.books.outputs.matrix }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+    steps:
+      - id: books
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request
+          url=os.environ["SUPABASE_URL"].rstrip("/")+"/rest/v1/books?select=id,file_key,subject,exam_track,status&file_key=not.is.null"
+          req=urllib.request.Request(url,headers={
+            "apikey":os.environ["SUPABASE_SECRET_KEY"],
+            "Authorization":"Bearer "+os.environ["SUPABASE_SECRET_KEY"]
+          })
+          data=json.load(urllib.request.urlopen(req,timeout=30))
+          books=[]
+          for b in data:
+            if b.get("id") and b.get("file_key"):
+              books.append({
+                "book_id":b["id"],
+                "file_key":b["file_key"],
+                "subject":b.get("subject") or "General",
+                "exam_track":b.get("exam_track") or "fmge_neetpg"
+              })
+          print("Found",len(books),"books")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+            f.write("matrix="+json.dumps({"include":books})+"\n")
+          PY
+
+  process-books:
+    needs: find-books
+    if: ${{ needs.find-books.outputs.matrix != '' && needs.find-books.outputs.matrix != '{"include":[]}' }}
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix: ${{ fromJson(needs.find-books.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
-      BOOK_ID: ${{ inputs.book_id }}
-      FILE_KEY: ${{ inputs.file_key }}
-      BOOK_SUBJECT: ${{ inputs.subject }}
-      BOOK_EXAM_TRACK: ${{ inputs.exam_track }}
+      BOOK_ID: ${{ matrix.book_id }}
+      FILE_KEY: ${{ matrix.file_key }}
+      BOOK_SUBJECT: ${{ matrix.subject }}
+      BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
 
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
@@ -48,63 +70,27 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: gemini-3.5-flash
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      QUESTIONS_PER_CHUNK: 8
+      AI_PASSES_PER_CHUNK: 2
+      AI_RETRIES: 4
+      AI_TIMEOUT: 150
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            poppler-utils \
-            tesseract-ocr \
-            tesseract-ocr-eng
+          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
 
-          pip install \
-            requests \
-            python-dotenv \
-            pypdf \
-            pdfplumber \
-            pymupdf \
-            pytesseract \
-            google-generativeai \
-            boto3
-
-      - name: Show processing configuration
-        run: |
-          echo "======================================"
-          echo "MedQ Book Processing"
-          echo "======================================"
-          echo "Book ID: ${BOOK_ID}"
-          echo "Subject: ${BOOK_SUBJECT}"
-          echo "Exam Track: ${BOOK_EXAM_TRACK}"
-          echo "File Key: ${FILE_KEY}"
-          echo "======================================"
-
-      - name: Process book
-        run: |
-          python worker/process_book.py
-
-      - name: Processing completed
-        if: success()
-        run: |
-          echo "======================================"
-          echo "MedQ book processing completed."
-          echo "======================================"
-
-      - name: Processing failed
-        if: failure()
-        run: |
-          echo "======================================"
-          echo "MedQ book processing FAILED."
-          echo "Check the logs above."
-          echo "======================================"
+      - name: Process entire book into permanent question bank
+        run: python worker/process_book.py
