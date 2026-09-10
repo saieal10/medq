@@ -171,7 +171,6 @@ class UploadRequest(BaseModel):
 class RegisterBookRequest(BaseModel):
     title: str
     subject: Optional[str] = None
-    exam_track: str = 'fmge_neetpg'
     file_key: str
     file_size_bytes: Optional[int] = None
     uploaded_by: str
@@ -786,7 +785,8 @@ def stream_gemini_medbot(messages: List[Dict[str, str]]):
 def trigger_github_workflow(
     book_id: str,
     file_key: str,
-    subject: str
+    subject: str,
+    exam_track: str = "fmge_neetpg"
 ):
 
     if not GITHUB_TOKEN:
@@ -812,6 +812,7 @@ def trigger_github_workflow(
             "book_id": str(book_id),
             "file_key": str(file_key),
             "subject": subject or "General",
+            "exam_track": exam_track or "fmge_neetpg",
         }
     }
 
@@ -951,213 +952,53 @@ def generate_questions_on_demand(
     request: GenerateQuestionsRequest,
     authorization: Optional[str] = Header(default=None),
 ):
+    """
+    Bank-only practice endpoint.
+
+    Practice NEVER asks Gemini to create questions. It only reports how many
+    already-built questions are available in the permanent MedQ question bank.
+    Background GitHub workers build the bank from uploaded books.
+    """
     require_authenticated_user(authorization)
 
     if request.exam_mode not in {"amc", "fmge", "mixed"}:
-        raise HTTPException(
-            status_code=400,
-            detail="exam_mode must be amc, fmge, or mixed."
-        )
+        raise HTTPException(status_code=400, detail="exam_mode must be amc, fmge, or mixed.")
 
     if request.count not in {10, 20, 50, 100}:
-        raise HTTPException(
-            status_code=400,
-            detail="count must be 10, 20, 50, or 100."
-        )
-
-    chapter = (request.chapter or "__AUTO__").strip()
-    target_subject = (request.subject or "__ALL__").strip()
-    target_topic = (request.topic or "__ALL__").strip()
-    target_subtopic = (request.subtopic or "__ALL__").strip()
-    target_difficulty = (request.difficulty or "all").strip().lower()
-    auto_mode = chapter == "__AUTO__"
-
-    if not chapter or len(chapter) > 250:
-        raise HTTPException(status_code=400, detail="Invalid chapter.")
-    if not target_subject or len(target_subject) > 160:
-        raise HTTPException(status_code=400, detail="Invalid subject.")
-    if not target_topic or len(target_topic) > 180:
-        raise HTTPException(status_code=400, detail="Invalid topic.")
-    if not target_subtopic or len(target_subtopic) > 180:
-        raise HTTPException(status_code=400, detail="Invalid subtopic.")
-    if target_difficulty not in {"all", "easy", "medium", "hard"}:
-        raise HTTPException(status_code=400, detail="Invalid difficulty.")
+        raise HTTPException(status_code=400, detail="count must be 10, 20, 50, or 100.")
 
     supabase = get_supabase()
+    query = supabase.table("questions").select("id", count="exact")
 
-    # Autopilot chooses a processed library book as optional grounding.
-    # The AI is NOT blocked when that book does not cover the requested subject;
-    # the worker can supplement with general medical knowledge.
-    try:
-        books_result = (
-            supabase
-            .table("books")
-            .select("id,title,subject,exam_track,status")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        books = books_result.data or []
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to load the MedQ library: {str(exc)}"
-        )
+    if request.subject and request.subject != "all":
+        query = query.eq("subject", request.subject)
+    if request.book_id and request.book_id != "all":
+        query = query.eq("book_id", request.book_id)
+    if request.chapter and request.chapter != "all":
+        query = query.eq("chapter", request.chapter)
+    if request.topic and request.topic != "all":
+        query = query.eq("topic", request.topic)
+    if request.subtopic and request.subtopic != "all":
+        query = query.eq("subtopic", request.subtopic)
+    if request.difficulty and request.difficulty != "all":
+        query = query.eq("difficulty", request.difficulty)
 
-    if not books:
-        raise HTTPException(
-            status_code=404,
-            detail="MedQ needs at least one processed library book as a generation anchor."
-        )
-
-    def subject_hint(value: str) -> str:
-        text = value.lower()
-        if "adult health" in text and "medicine" in text:
-            return "medicine"
-        if "adult health" in text and "surgery" in text:
-            return "surgery"
-        if "women" in text or "obstetric" in text or "gynaec" in text:
-            return "obstetrics"
-        if "child" in text or "paedi" in text or "pedi" in text:
-            return "pediatrics"
-        if "mental" in text or "psychi" in text:
-            return "psychiatry"
-        if "population" in text or "community" in text or "psm" in text:
-            return "community"
-        return text
-
-    preferred_id = (request.book_id or "").strip()
-    hint = subject_hint(target_subject)
-
-    desired_track = {
-        'amc': 'amc',
-        'fmge': 'fmge_neetpg',
-        'mixed': None,
-    }.get(request.exam_mode)
-
-    candidates = []
-    if preferred_id:
-        candidates.extend([book for book in books if book.get("id") == preferred_id])
-
-    if target_subject != "__ALL__":
-        candidates.extend([
-            book for book in books
-            if hint in str(book.get("subject") or "").lower()
-            or str(book.get("subject") or "").lower() in hint
-        ])
-
-    # Prefer books assigned to the same exam track. Mixed mode can use either.
-    if desired_track:
-        candidates = [
-            book for book in candidates
-            if book.get('exam_track') == desired_track
-        ] + [
-            book for book in books
-            if book.get('exam_track') == desired_track
-        ] + candidates
-
-    candidates.extend(books)
-
-    # Deduplicate while preserving preference order, and require real chunks.
-    chosen_book = None
-    seen = set()
-    for book in candidates:
-        book_id = book.get("id")
-        if not book_id or book_id in seen:
-            continue
-        seen.add(book_id)
-        try:
-            chunk_query = (
-                supabase
-                .table("book_chunks")
-                .select("id")
-                .eq("book_id", book_id)
-            )
-            if not auto_mode:
-                chunk_query = chunk_query.eq("chapter", chapter)
-            chunk_result = chunk_query.limit(1).execute()
-        except Exception:
-            continue
-        if chunk_result.data:
-            chosen_book = book
-            break
-
-    if not chosen_book:
-        raise HTTPException(
-            status_code=404,
-            detail="No processed textbook chunks are available yet."
-        )
-
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="GitHub Actions token is not configured."
-        )
-
-    workflow_url = (
-        f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/"
-        f"{GITHUB_REPO_NAME}/actions/workflows/"
-        f"generate-questions.yml/dispatches"
-    )
-
-    payload = {
-        "ref": GITHUB_BRANCH,
-        "inputs": {
-            "book_id": chosen_book["id"],
-            "chapter": chapter,
-            "subject": target_subject,
-            "topic": target_topic,
-            "subtopic": target_subtopic,
-            "difficulty": target_difficulty,
-            "exam_mode": request.exam_mode,
-            "count": str(request.count),
-        },
-    }
-
-    github_request = urllib.request.Request(
-        workflow_url,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-            "User-Agent": "MedQ-API",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(github_request, timeout=20) as response:
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(
-            status_code=502,
-            detail=f"GitHub generation dispatch failed ({exc.code}): {body[:300]}"
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Unable to start question worker: {str(exc)}"
-        )
-
-    if status not in {200, 201, 202, 204}:
-        raise HTTPException(
-            status_code=502,
-            detail="GitHub did not accept the generation job."
-        )
+    result = query.limit(1).execute()
+    available = getattr(result, "count", None)
+    if available is None:
+        available = len(result.data or [])
 
     return {
         "ok": True,
-        "status": "queued",
-        "book_id": chosen_book["id"],
-        "subject": target_subject,
-        "difficulty": target_difficulty,
-        "chapter": chapter,
+        "status": "bank_only",
+        "available": int(available or 0),
+        "requested": request.count,
         "exam_mode": request.exam_mode,
-        "count": request.count,
+        "message": (
+            "Questions are served from the permanent MedQ question bank. "
+            "Background book processing continues separately."
+        ),
     }
-
 
 
 @app.post("/api/medbot/stream")
@@ -1570,12 +1411,6 @@ def create_upload_url(
 # Register uploaded book
 # ---------------------------------------------------------
 
-BOOK_EXAM_TRACKS = {
-    'amc',
-    'fmge_neetpg',
-}
-
-
 @app.post("/api/books/register")
 def register_book(
     request: RegisterBookRequest
@@ -1583,22 +1418,12 @@ def register_book(
 
     supabase = get_supabase()
 
-    exam_track = (request.exam_track or "fmge_neetpg").strip().lower()
-    if exam_track not in BOOK_EXAM_TRACKS:
-        raise HTTPException(
-            status_code=400,
-            detail="exam_track must be amc or fmge_neetpg."
-        )
-
     record = {
         "title":
             request.title,
 
         "subject":
             request.subject,
-
-        "exam_track":
-            exam_track,
 
         "file_key":
             request.file_key,
