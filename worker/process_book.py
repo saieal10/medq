@@ -195,7 +195,7 @@ Return ONLY a JSON array.
 
 Fields:
 exam_type, question_type, stem, option_a, option_b, option_c, option_d, option_e,
-correct_option, explanation, topic, subtopic, difficulty, source_page, source_page_end
+correct_option, explanation, topic, difficulty, source_page, source_page_end
 """
     prompt=f"""
 SUBJECT: {BOOK_SUBJECT}
@@ -237,7 +237,6 @@ def prepare(q, chunk):
         correct=str(q.get("correct_option","")).strip().upper()
         explanation=str(q.get("explanation","")).strip()
         topic=str(q.get("topic","")).strip()[:250]
-        subtopic=str(q.get("subtopic","")).strip()[:250]
         difficulty=str(q.get("difficulty","medium")).strip().lower()
         exam=str(q.get("exam_type","FMGE")).strip().upper()
         if exam not in ("AMC","FMGE","BOTH"): exam="FMGE" if BOOK_EXAM_TRACK!="amc" else "AMC"
@@ -259,7 +258,6 @@ def prepare(q, chunk):
             "subject":BOOK_SUBJECT,
             "chapter":str(chunk.get("chapter") or "Clinical medicine")[:250],
             "topic":topic,
-            "subtopic":subtopic or None,
             "exam_type":exam,
             "question_type":str(q.get("question_type","clinical_application"))[:100],
             "difficulty":difficulty,
@@ -297,10 +295,6 @@ def save_questions(items):
         supabase.table("questions").insert(valid[i:i+25]).execute()
     return len(valid)
 
-def update_status(status):
-    try:supabase.table("books").update({"status":status}).eq("id",BOOK_ID).execute()
-    except Exception as e:print("[DB] status update failed:",e)
-
 def main():
     print("========================================")
     print("MEDQ BACKGROUND QUESTION BANK WORKER")
@@ -308,7 +302,6 @@ def main():
     print("Book:",BOOK_ID)
     print("Subject:",BOOK_SUBJECT)
     print("Exam track:",BOOK_EXAM_TRACK)
-    update_status("processing")
     try:
         with tempfile.TemporaryDirectory() as td:
             pdf=os.path.join(td,"book.pdf")
@@ -342,10 +335,8 @@ def main():
                 saved_count=save_questions(batch)
                 total+=saved_count
                 print(f"[BANK] +{saved_count} questions (total this run {total})")
-            update_status("ready")
             print(f"SUCCESS: background bank processing complete. Added {total} questions.")
     except Exception as e:
-        update_status("error")
         print("PROCESSING FAILED:",e)
         raise
 
