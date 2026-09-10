@@ -34,6 +34,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "18000"))
 QUESTIONS_PER_CHUNK = int(os.getenv("QUESTIONS_PER_CHUNK", "8"))
 AI_PASSES_PER_CHUNK = int(os.getenv("AI_PASSES_PER_CHUNK", "2"))
+CHUNKS_PER_RUN = int(os.getenv("CHUNKS_PER_RUN", "20"))
 AI_RETRIES = int(os.getenv("AI_RETRIES", "4"))
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "150"))
 OCR_DPI = int(os.getenv("OCR_DPI", "150"))
@@ -180,6 +181,9 @@ Generate {QUESTIONS_PER_CHUNK} questions for this pass.
 Use different concepts, clinical presentations, investigations, management decisions,
 mechanisms, complications, pharmacology, pathology, or important associations when
 supported by the source. Do not make all questions test the same fact.
+If this chunk already has questions, deliberately choose different concepts from
+those likely to have been tested before; vary diagnosis, next-best step, investigation,
+management, complications, mechanisms, drugs, pathology, and clinical associations.
 For AMC: favour realistic clinical vignettes, prioritisation, next-best-step,
 diagnosis, investigation and management.
 For FMGE/NEET-PG: mix high-yield facts with clinical application, pathology,
@@ -198,6 +202,7 @@ SUBJECT: {BOOK_SUBJECT}
 CHAPTER: {chunk.get("chapter") or "Clinical medicine"}
 SOURCE PAGES: {page_start}-{page_end}
 PASS: {pass_no}
+EXISTING QUESTIONS FROM THIS CHUNK: {chunk.get("existing_question_count", 0)}
 
 TEXTBOOK:
 {chunk["content"]}
@@ -271,15 +276,19 @@ def prepare(q, chunk):
     except Exception:
         return None
 
-def existing_chunk_ids():
-    rows=[]
-    start=0
+def question_counts_by_chunk():
+    counts = {}
+    start = 0
     while True:
-        res=supabase.table("questions").select("source_chunk_id").eq("book_id",BOOK_ID).range(start,start+999).execute().data or []
-        rows.extend([r["source_chunk_id"] for r in res if r.get("source_chunk_id")])
-        if len(res)<1000: break
-        start+=1000
-    return set(rows)
+        res = supabase.table("questions").select("source_chunk_id").eq("book_id", BOOK_ID).range(start, start + 999).execute().data or []
+        for r in res:
+            cid = r.get("source_chunk_id")
+            if cid:
+                counts[cid] = counts.get(cid, 0) + 1
+        if len(res) < 1000:
+            break
+        start += 1000
+    return counts
 
 def save_questions(items):
     valid=[x for x in items if x]
@@ -310,17 +319,23 @@ def main():
             chunks=make_chunks(pages)
             saved=save_chunks(chunks)
             print(f"[BANK] {len(saved)} knowledge chunks available")
-            done=existing_chunk_ids()
-            print(f"[BANK] {len(done)} chunks already have questions; resuming.")
+            counts=question_counts_by_chunk()
+            # Continuous background growth: do NOT skip a chunk merely because it
+            # already has questions. Pick the least-covered chunks so every book
+            # keeps producing more questions on future scheduled runs.
+            ranked=sorted(saved, key=lambda c: (counts.get(str(c["id"]), 0), c["chunk_index"]))
+            selected=ranked[:max(1, min(CHUNKS_PER_RUN, len(ranked)))]
+            print(f"[BANK] Existing question coverage: {sum(counts.values())} questions across {len(counts)} chunks.")
+            print(f"[BANK] This run will expand {len(selected)} chunks (lowest coverage first).")
             total=0
-            for n,chunk in enumerate(saved,1):
-                if str(chunk["id"]) in done:
-                    continue
-                print(f"[BANK] chunk {n}/{len(saved)} pages {chunk['page_start']}-{chunk['page_end']}")
+            for pos,chunk in enumerate(selected,1):
+                cid=str(chunk["id"])
+                existing_count=counts.get(cid,0)
+                print(f"[BANK] expansion {pos}/{len(selected)} | chunk {chunk['chunk_index']+1}/{len(saved)} | existing {existing_count} questions | pages {chunk['page_start']}-{chunk['page_end']}")
                 batch=[]
                 for p in range(1,AI_PASSES_PER_CHUNK+1):
                     try:
-                        generated=gemini({"content":chunk["content"],"pages":list(range(chunk["page_start"],chunk["page_end"]+1)),"chapter":chunk.get("chapter"),"id":chunk["id"]},p)
+                        generated=gemini({"content":chunk["content"],"pages":list(range(chunk["page_start"],chunk["page_end"]+1)),"chapter":chunk.get("chapter"),"id":chunk["id"],"existing_question_count":existing_count,"run_pass":p},p)
                         batch.extend([prepare(q,{"id":chunk["id"],"chapter":chunk.get("chapter"),"pages":list(range(chunk["page_start"],chunk["page_end"]+1))}) for q in generated])
                     except Exception as e:
                         print("[BANK] pass failed:",e)
