@@ -62,7 +62,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f worker/requirements.txt ]; then
-            python -m pip install -r worker/requirements.txt
+            python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
           else
             python -m pip install boto3 pillow pypdf pdfplumber pymupdf pytesseract requests python-dotenv supabase google-generativeai
           fi
