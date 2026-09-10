@@ -1616,7 +1616,8 @@ def process_book(
         trigger_github_workflow(
             book_id=book_id,
             file_key=file_key,
-            subject=subject
+            subject=subject,
+            exam_track=book.get("exam_track") or "fmge_neetpg"
         )
 
     except HTTPException as exc:
