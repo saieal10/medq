@@ -23,31 +23,24 @@ jobs:
         run: |
           python - <<'PY'
           import os, json, urllib.request
-          url = os.environ["SUPABASE_URL"].rstrip("/") + "/rest/v1/books?select=id,file_key,subject,exam_track,status&file_key=not.is.null"
-          req = urllib.request.Request(url, headers={
-              "apikey": os.environ["SUPABASE_SECRET_KEY"],
-              "Authorization": "Bearer " + os.environ["SUPABASE_SECRET_KEY"]
-          })
-          data = json.load(urllib.request.urlopen(req, timeout=30))
-          books = []
+          url=os.environ["SUPABASE_URL"].rstrip("/")+"/rest/v1/books?select=id,file_key,subject,exam_track,status&file_key=not.is.null"
+          req=urllib.request.Request(url,headers={"apikey":os.environ["SUPABASE_SECRET_KEY"],"Authorization":"Bearer "+os.environ["SUPABASE_SECRET_KEY"]})
+          data=json.load(urllib.request.urlopen(req,timeout=30))
+          books=[]
           for b in data:
-              if b.get("id") and b.get("file_key"):
-                  books.append({
-                      "book_id": b["id"],
-                      "file_key": b["file_key"],
-                      "subject": b.get("subject") or "General",
-                      "exam_track": b.get("exam_track") or "fmge_neetpg"
-                  })
-          print("Found", len(books), "books")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("matrix=" + json.dumps({"include": books}) + "\n")
+            track=(b.get("exam_track") or "fmge_neetpg").lower()
+            if track not in ("amc","fmge_neetpg"): track="fmge_neetpg"
+            if b.get("id") and b.get("file_key"):
+              books.append({"book_id":b["id"],"file_key":b["file_key"],"subject":b.get("subject") or "General","exam_track":track})
+          print("Found",len(books),"books")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("matrix="+json.dumps({"include":books})+"\n")
           PY
 
   process-books:
     needs: find-books
     if: ${{ needs.find-books.outputs.matrix != '' && needs.find-books.outputs.matrix != '{"include":[]}' }}
     strategy:
-      max-parallel: 2
+      max-parallel: 4
       fail-fast: false
       matrix: ${{ fromJson(needs.find-books.outputs.matrix) }}
     runs-on: ubuntu-latest
@@ -67,26 +60,22 @@ jobs:
       GEMINI_MODEL: gemini-3.5-flash
       QUESTIONS_PER_CHUNK: 8
       AI_PASSES_PER_CHUNK: 2
-      CHUNKS_PER_RUN: 20
+      CHUNKS_PER_RUN: 30
+      DAILY_FMGE_TARGET: 400
+      DAILY_AMC_TARGET: 200
       AI_RETRIES: 4
       AI_TIMEOUT: 150
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+        with: {python-version: "3.11"}
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
-
       - name: Process and expand permanent question bank
         run: python worker/process_book.py
