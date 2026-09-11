@@ -39,6 +39,8 @@ AI_RETRIES = int(os.getenv("AI_RETRIES", "4"))
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "150"))
 OCR_DPI = int(os.getenv("OCR_DPI", "150"))
 MIN_USABLE_PAGE_CHARS = int(os.getenv("MIN_USABLE_PAGE_CHARS", "80"))
+DAILY_FMGE_TARGET = int(os.getenv("DAILY_FMGE_TARGET", "400"))
+DAILY_AMC_TARGET = int(os.getenv("DAILY_AMC_TARGET", "200"))
 NATIVE_TEXT_MIN_CHARS = int(os.getenv("NATIVE_TEXT_MIN_CHARS", "140"))
 
 required = {
@@ -238,8 +240,8 @@ def prepare(q, chunk):
         explanation=str(q.get("explanation","")).strip()
         topic=str(q.get("topic","")).strip()[:250]
         difficulty=str(q.get("difficulty","medium")).strip().lower()
-        exam=str(q.get("exam_type","FMGE")).strip().upper()
-        if exam not in ("AMC","FMGE","BOTH"): exam="FMGE" if BOOK_EXAM_TRACK!="amc" else "AMC"
+        # Keep generated questions strictly on the book's exam track.
+        exam = "AMC" if BOOK_EXAM_TRACK == "amc" else "FMGE"
         if difficulty not in ("easy","medium","hard"): difficulty="medium"
         if len(stem)<30 or not topic or len(explanation)<30 or correct not in "ABCDE" or any(not x for x in opts):
             return None
@@ -295,6 +297,29 @@ def save_questions(items):
         supabase.table("questions").insert(valid[i:i+25]).execute()
     return len(valid)
 
+def daily_generated_count(exam_type):
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        result = (supabase.table("questions")
+                  .select("id", count="exact")
+                  .eq("exam_type", exam_type)
+                  .gte("created_at", start)
+                  .limit(1)
+                  .execute())
+        return int(getattr(result, "count", 0) or 0)
+    except Exception as exc:
+        print(f"[QUOTA] count check failed: {exc}")
+        return 0
+
+def daily_quota_reached():
+    if BOOK_EXAM_TRACK == "amc":
+        count = daily_generated_count("AMC")
+        print(f"[QUOTA] AMC today: {count}/{DAILY_AMC_TARGET}")
+        return count >= DAILY_AMC_TARGET
+    count = daily_generated_count("FMGE")
+    print(f"[QUOTA] FMGE today: {count}/{DAILY_FMGE_TARGET}")
+    return count >= DAILY_FMGE_TARGET
+
 def main():
     print("========================================")
     print("MEDQ BACKGROUND QUESTION BANK WORKER")
@@ -322,6 +347,9 @@ def main():
             print(f"[BANK] This run will expand {len(selected)} chunks (lowest coverage first).")
             total=0
             for pos,chunk in enumerate(selected,1):
+                if daily_quota_reached():
+                    print("[QUOTA] Daily target reached for this exam track. Stopping this worker.")
+                    break
                 cid=str(chunk["id"])
                 existing_count=counts.get(cid,0)
                 print(f"[BANK] expansion {pos}/{len(selected)} | chunk {chunk['chunk_index']+1}/{len(saved)} | existing {existing_count} questions | pages {chunk['page_start']}-{chunk['page_end']}")
