@@ -1,63 +1,31 @@
-import os
-import io
-import re
-import json
-import time
-import tempfile
-from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
-
-import boto3
-import pymupdf
-import pytesseract
-import requests
-from PIL import Image
+import os, re, json, time, io, concurrent.futures
+from typing import List, Dict, Any
+import boto3, fitz, requests
 from botocore.config import Config
 from supabase import create_client
 
 BOOK_ID = os.getenv("BOOK_ID")
 FILE_KEY = os.getenv("FILE_KEY")
 BOOK_SUBJECT = os.getenv("BOOK_SUBJECT", "General")
-BOOK_EXAM_TRACK = os.getenv("BOOK_EXAM_TRACK", "fmge_neetpg")
-
+BOOK_EXAM_TRACK = os.getenv("BOOK_EXAM_TRACK", "FMGE_NEET_PG")
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "medq-books")
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "18000"))
-QUESTIONS_PER_CHUNK = int(os.getenv("QUESTIONS_PER_CHUNK", "8"))
-AI_PASSES_PER_CHUNK = int(os.getenv("AI_PASSES_PER_CHUNK", "2"))
-CHUNKS_PER_RUN = int(os.getenv("CHUNKS_PER_RUN", "20"))
-AI_RETRIES = int(os.getenv("AI_RETRIES", "4"))
-AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "150"))
-OCR_DPI = int(os.getenv("OCR_DPI", "150"))
-MIN_USABLE_PAGE_CHARS = int(os.getenv("MIN_USABLE_PAGE_CHARS", "80"))
-DAILY_FMGE_TARGET = int(os.getenv("DAILY_FMGE_TARGET", "400"))
-DAILY_AMC_TARGET = int(os.getenv("DAILY_AMC_TARGET", "200"))
-NATIVE_TEXT_MIN_CHARS = int(os.getenv("NATIVE_TEXT_MIN_CHARS", "140"))
+# Turbo controls. MCQ books are parsed directly; AI is used only for missing
+# answer/explanation/metadata, in large batches. This avoids one AI call per MCQ.
+MAX_PAGES = int(os.getenv("MAX_PAGES", "0"))          # 0 = entire PDF
+MAX_MCQS_PER_RUN = int(os.getenv("MAX_MCQS_PER_RUN", "800"))
+AI_BATCH_SIZE = int(os.getenv("AI_BATCH_SIZE", "50"))
+MAX_AI_PARALLEL = int(os.getenv("MAX_AI_PARALLEL", "5"))
+SAVE_BATCH = int(os.getenv("SAVE_BATCH", "100"))
 
-required = {
-    "BOOK_ID": BOOK_ID,
-    "FILE_KEY": FILE_KEY,
-    "R2_ACCOUNT_ID": R2_ACCOUNT_ID,
-    "R2_ACCESS_KEY_ID": R2_ACCESS_KEY_ID,
-    "R2_SECRET_ACCESS_KEY": R2_SECRET_ACCESS_KEY,
-    "SUPABASE_URL": SUPABASE_URL,
-    "SUPABASE_SECRET_KEY": SUPABASE_SECRET_KEY,
-    "GEMINI_API_KEY": GEMINI_API_KEY,
-}
-missing = [k for k, v in required.items() if not v]
-if missing:
-    raise RuntimeError("Missing required environment variables: " + ", ".join(missing))
-
-supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
+sb = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 r2 = boto3.client(
     "s3",
     endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
@@ -67,306 +35,197 @@ r2 = boto3.client(
     config=Config(signature_version="s3v4"),
 )
 
-def now():
-    return datetime.now(timezone.utc).isoformat()
+def get_json(url, headers=None, timeout=30):
+    r = requests.get(url, headers=headers or {}, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
 
-def clean_text(text):
-    text = (text or "").replace("\x00", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+def download_pdf(path):
+    r2.download_file(R2_BUCKET_NAME, FILE_KEY, path)
 
-def nonclinical(text):
-    s = (text or "").lower()
-    bad = [
-        "preface", "foreword", "about the author", "about the editor",
-        "contributors", "publisher", "copyright", "isbn", "acknowledg",
-        "table of contents", "contents", "bibliography", "references",
-        "index", "advertisement", "dedication", "permissions",
-        "disclaimer", "video library", "editorial board"
+def norm(s):
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+def clean_question(s):
+    s = re.sub(r"^\s*(?:Q(?:uestion)?\s*)?\d+\s*[\.\)\-:]\s*", "", s, flags=re.I)
+    return norm(s)
+
+def exam_type():
+    t = (BOOK_EXAM_TRACK or "").upper()
+    if "AMC" in t and "FMGE" in t:
+        return "BOTH"
+    if "AMC" in t:
+        return "AMC"
+    return "FMGE"
+
+def existing_stems():
+    out=set()
+    offset=0
+    while True:
+        res = sb.table("questions").select("stem").eq("book_id", BOOK_ID).range(offset, offset+999).execute()
+        rows=res.data or []
+        for x in rows:
+            st=norm(x.get("stem")).lower()
+            if st: out.add(st)
+        if len(rows)<1000: break
+        offset += 1000
+    return out
+
+def parse_answer(text):
+    pats = [
+        r"(?:correct\s+answer|answer|ans(?:wer)?)\s*[:\-]?\s*\(?([A-E])\)?",
+        r"\b(?:key|correct)\s*[:\-]?\s*\(?([A-E])\)?"
     ]
-    return any(x in s for x in bad)
-
-def chapter_label(text):
-    lines = [re.sub(r"\s+", " ", x).strip(" -:") for x in (text or "").splitlines()]
-    for line in lines[:40]:
-        low=line.lower()
-        if not line or len(line)>120: continue
-        if nonclinical(line): continue
-        if re.match(r"^(chapter|part|section)\s+[ivxlcdm\d]+", low):
-            return line
+    for p in pats:
+        m=re.search(p, text, re.I)
+        if m: return m.group(1).upper()
     return None
 
-def extract_pages(pdf_path):
-    doc = pymupdf.open(pdf_path)
-    pages=[]
-    for i,page in enumerate(doc):
-        raw=clean_text(page.get_text("text"))
-        method="text"
-        if len(raw) < NATIVE_TEXT_MIN_CHARS:
-            pix=page.get_pixmap(matrix=pymupdf.Matrix(OCR_DPI/72, OCR_DPI/72), alpha=False)
-            image=Image.open(io.BytesIO(pix.tobytes("png")))
-            raw=clean_text(pytesseract.image_to_string(image, lang="eng"))
-            method="ocr"
-        if len(raw) < MIN_USABLE_PAGE_CHARS or nonclinical(raw[:1200]):
+def parse_mcqs(text):
+    # Handles common printed formats:
+    # 1. stem / A. / B. / C. / D. / E.
+    # Also tolerates "(A)", "A)", "A:" and option lines with indentation.
+    starts=list(re.finditer(r"(?m)^\s*(?:Q(?:uestion)?\s*)?(\d{1,5})\s*[\.\):\-]\s+", text, re.I))
+    blocks=[]
+    for i,m in enumerate(starts):
+        if i>=MAX_MCQS_PER_RUN*2: break
+        chunk=text[m.start():(starts[i+1].start() if i+1<len(starts) else len(text))]
+        opt=list(re.finditer(r"(?im)^\s*\(?([A-E])\)?\s*[\.\):\-]\s+", chunk))
+        if len(opt)<5:
             continue
-        pages.append({"page": i+1, "text": raw, "method": method})
-        if (i+1) % 50 == 0:
-            print(f"[EXTRACT] page {i+1}/{len(doc)}")
-    return pages
-
-def make_chunks(pages):
-    chunks=[]
-    current=""
-    page_nums=[]
-    chapter=None
-    for p in pages:
-        possible=chapter_label(p["text"])
-        if possible:
-            chapter=possible
-        addition=f"\n[PAGE {p['page']}]\n{p['text']}"
-        if len(current)+len(addition)>CHUNK_SIZE and current:
-            chunks.append({"content":current.strip(),"pages":page_nums,"chapter":chapter})
-            current=""
-            page_nums=[]
-        current += addition
-        page_nums.append(p["page"])
-    if current:
-        chunks.append({"content":current.strip(),"pages":page_nums,"chapter":chapter})
-    return chunks
-
-def save_chunks(chunks):
-    rows=[]
-    for idx,c in enumerate(chunks):
-        pages=c["pages"]
-        rows.append({
-            "book_id":BOOK_ID,
-            "chunk_index":idx,
-            "chapter":(c.get("chapter") or "Clinical medicine")[:250],
-            "section":None,
-            "topic":None,
-            "page_start":min(pages),
-            "page_end":max(pages),
-            "content":c["content"],
-            "word_count":len(c["content"].split()),
-            "extraction_method":"ocr" if "[PAGE" in c["content"] and False else "mixed",
-            "processing_status":"ready"
+        opt=opt[:5]
+        stem=clean_question(chunk[:opt[0].start()])
+        if len(stem)<20: continue
+        vals=[]
+        for j,o in enumerate(opt):
+            end=opt[j+1].start() if j+1<len(opt) else len(chunk)
+            vals.append(norm(chunk[o.end():end]))
+        if any(len(v)<2 for v in vals): continue
+        answer=parse_answer(chunk)
+        # Strip trailing answer line from E where it got captured.
+        vals[-1]=re.split(r"\b(?:correct\s+answer|answer|ans(?:wer)?)\s*[:\-]", vals[-1], flags=re.I)[0].strip()
+        blocks.append({
+            "stem":stem, "option_a":vals[0], "option_b":vals[1], "option_c":vals[2],
+            "option_d":vals[3], "option_e":vals[4], "correct_option":answer,
+            "raw":chunk[:8000]
         })
-    for i in range(0,len(rows),25):
-        supabase.table("book_chunks").upsert(
-            rows[i:i+25], on_conflict="book_id,chunk_index"
-        ).execute()
-    return supabase.table("book_chunks").select(
-        "id,chunk_index,chapter,page_start,page_end,content"
-    ).eq("book_id",BOOK_ID).order("chunk_index").execute().data or []
+    return blocks
 
-def parse_json(text):
-    text=(text or "").strip()
-    if "```" in text:
-        text=re.sub(r"^```(?:json)?\s*|\s*```$","",text,flags=re.I|re.S).strip()
-    a=text.find("["); b=text.rfind("]")
-    if a<0 or b<0: raise RuntimeError("Gemini response did not contain a JSON array.")
-    data=json.loads(text[a:b+1])
-    if not isinstance(data,list): raise RuntimeError("Gemini response was not a list.")
-    return data
+def page_texts(path):
+    doc=fitz.open(path)
+    pages=range(len(doc)) if not MAX_PAGES else range(min(MAX_PAGES,len(doc)))
+    for p in pages:
+        yield p+1, doc[p].get_text("text") or ""
 
-def gemini(chunk, pass_no):
-    page_start, page_end=min(chunk["pages"]),max(chunk["pages"])
-    style = "AMC CAT clinical reasoning" if BOOK_EXAM_TRACK=="amc" else "FMGE/NEET-PG high-yield clinical and factual"
-    system=f"""
-You are the background question-bank engine for MedQ.
-Create original single-best-answer medical MCQs from the supplied textbook material.
-Exam target: {style}.
-This is a permanent question bank, not an on-demand chat.
-
-Generate {QUESTIONS_PER_CHUNK} questions for this pass.
-Use different concepts, clinical presentations, investigations, management decisions,
-mechanisms, complications, pharmacology, pathology, or important associations when
-supported by the source. Do not make all questions test the same fact.
-If this chunk already has questions, deliberately choose different concepts from
-those likely to have been tested before; vary diagnosis, next-best step, investigation,
-management, complications, mechanisms, drugs, pathology, and clinical associations.
-For AMC: favour realistic clinical vignettes, prioritisation, next-best-step,
-diagnosis, investigation and management.
-For FMGE/NEET-PG: mix high-yield facts with clinical application, pathology,
-pharmacology, microbiology, investigations and treatment.
-Use only information supported by the source passage.
-Exactly five options A-E, one best answer, plausible distractors, clear explanation.
-Do not copy sentences from the textbook.
-Return ONLY a JSON array.
-
-Fields:
-exam_type, question_type, stem, option_a, option_b, option_c, option_d, option_e,
-correct_option, explanation, topic, difficulty, source_page, source_page_end
-"""
-    prompt=f"""
-SUBJECT: {BOOK_SUBJECT}
-CHAPTER: {chunk.get("chapter") or "Clinical medicine"}
-SOURCE PAGES: {page_start}-{page_end}
-PASS: {pass_no}
-EXISTING QUESTIONS FROM THIS CHUNK: {chunk.get("existing_question_count", 0)}
-
-TEXTBOOK:
-{chunk["content"]}
-"""
+def gemini_batch(items):
+    prompt = """You are MedQ's medical MCQ quality-control engine.
+For each supplied MCQ, return JSON only: an array with one object per input.
+Do NOT rewrite the question. Preserve the stem and options exactly unless an
+obvious OCR error makes an option unreadable. Determine the single best answer
+from the question/options. Add a concise medically accurate explanation,
+topic, difficulty (easy/medium/hard), and question_type.
+Return fields: index, correct_option, explanation, topic, difficulty, question_type.
+Never invent a page number. If uncertain, still choose the best answer but keep
+the explanation cautious."""
+    payload_items=[]
+    for i,x in enumerate(items):
+        payload_items.append({"index":i,"stem":x["stem"],"A":x["option_a"],"B":x["option_b"],
+                              "C":x["option_c"],"D":x["option_d"],"E":x["option_e"]})
+    body={"contents":[{"parts":[{"text":prompt+"\n\nINPUT:\n"+json.dumps(payload_items,ensure_ascii=False)}]}],
+          "generationConfig":{"temperature":0.1,"responseMimeType":"application/json"}}
     url=f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    payload={
-        "contents":[{"role":"user","parts":[{"text":system+"\n\n"+prompt}]}],
-        "generationConfig":{"temperature":0.45,"responseMimeType":"application/json"}
-    }
     last=None
-    for attempt in range(1,AI_RETRIES+1):
+    for attempt in range(4):
         try:
             r=requests.post(url,headers={"x-goog-api-key":GEMINI_API_KEY,"Content-Type":"application/json"},
-                            json=payload,timeout=AI_TIMEOUT)
+                            json=body,timeout=150)
             if r.status_code in (429,500,502,503,504):
-                raise RuntimeError(f"Gemini temporary error {r.status_code}: {r.text[:500]}")
+                last=RuntimeError(f"Gemini {r.status_code}")
+                time.sleep(min(20,2**attempt*2)); continue
             r.raise_for_status()
-            data=r.json()
-            text="\n".join(p.get("text","") for p in data["candidates"][0]["content"]["parts"])
-            return parse_json(text)
+            c=r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(c)
         except Exception as e:
-            last=e
-            print(f"[AI] attempt {attempt}/{AI_RETRIES} failed: {e}")
-            if attempt<AI_RETRIES:
-                time.sleep(min(2**attempt,12))
-    raise RuntimeError(f"Gemini failed after retries: {last}")
+            last=e; time.sleep(min(20,2**attempt*2))
+    raise last or RuntimeError("Gemini failed")
 
-def prepare(q, chunk):
-    try:
-        stem=str(q.get("stem","")).strip()
-        opts=[str(q.get(f"option_{x}","")).strip() for x in "abcde"]
-        correct=str(q.get("correct_option","")).strip().upper()
-        explanation=str(q.get("explanation","")).strip()
-        topic=str(q.get("topic","")).strip()[:250]
-        difficulty=str(q.get("difficulty","medium")).strip().lower()
-        # Keep generated questions strictly on the book's exam track.
-        exam = "AMC" if BOOK_EXAM_TRACK == "amc" else "FMGE"
-        if difficulty not in ("easy","medium","hard"): difficulty="medium"
-        if len(stem)<30 or not topic or len(explanation)<30 or correct not in "ABCDE" or any(not x for x in opts):
-            return None
-        if len(set(x.lower() for x in opts)) != 5: return None
-        pages=chunk["pages"]
-        sp=q.get("source_page",min(pages)); ep=q.get("source_page_end",sp)
-        try: sp=int(sp)
-        except: sp=min(pages)
-        try: ep=int(ep)
-        except: ep=sp
-        if not min(pages)<=sp<=max(pages): sp=min(pages)
-        if not sp<=ep<=max(pages): ep=sp
-        return {
-            "book_id":BOOK_ID,
-            "source_chunk_id":chunk["id"],
-            "subject":BOOK_SUBJECT,
-            "chapter":str(chunk.get("chapter") or "Clinical medicine")[:250],
-            "topic":topic,
-            "exam_type":exam,
-            "question_type":str(q.get("question_type","clinical_application"))[:100],
-            "difficulty":difficulty,
-            "stem":stem,
-            "option_a":opts[0],"option_b":opts[1],"option_c":opts[2],"option_d":opts[3],"option_e":opts[4],
-            "correct_option":correct,
-            "explanation":explanation,
-            "source_page":sp,
-            "source_page_end":ep,
-            "review_status":"generated",
-            "quality_score":None,
-            "reviewer_notes":None
-        }
-    except Exception:
-        return None
-
-def question_counts_by_chunk():
-    counts = {}
-    start = 0
-    while True:
-        res = supabase.table("questions").select("source_chunk_id").eq("book_id", BOOK_ID).range(start, start + 999).execute().data or []
-        for r in res:
-            cid = r.get("source_chunk_id")
-            if cid:
-                counts[cid] = counts.get(cid, 0) + 1
-        if len(res) < 1000:
-            break
-        start += 1000
-    return counts
-
-def save_questions(items):
-    valid=[x for x in items if x]
-    if not valid:return 0
-    for i in range(0,len(valid),25):
-        supabase.table("questions").insert(valid[i:i+25]).execute()
-    return len(valid)
-
-def daily_generated_count(exam_type):
-    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    try:
-        result = (supabase.table("questions")
-                  .select("id", count="exact")
-                  .eq("exam_type", exam_type)
-                  .gte("created_at", start)
-                  .limit(1)
-                  .execute())
-        return int(getattr(result, "count", 0) or 0)
-    except Exception as exc:
-        print(f"[QUOTA] count check failed: {exc}")
-        return 0
-
-def daily_quota_reached():
-    if BOOK_EXAM_TRACK == "amc":
-        count = daily_generated_count("AMC")
-        print(f"[QUOTA] AMC today: {count}/{DAILY_AMC_TARGET}")
-        return count >= DAILY_AMC_TARGET
-    count = daily_generated_count("FMGE")
-    print(f"[QUOTA] FMGE today: {count}/{DAILY_FMGE_TARGET}")
-    return count >= DAILY_FMGE_TARGET
+def save(rows):
+    if not rows: return 0
+    n=0
+    for i in range(0,len(rows),SAVE_BATCH):
+        part=rows[i:i+SAVE_BATCH]
+        res=sb.table("questions").insert(part).execute()
+        n += len(res.data or [])
+    return n
 
 def main():
-    print("========================================")
-    print("MEDQ BACKGROUND QUESTION BANK WORKER")
-    print("========================================")
-    print("Book:",BOOK_ID)
-    print("Subject:",BOOK_SUBJECT)
-    print("Exam track:",BOOK_EXAM_TRACK)
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            pdf=os.path.join(td,"book.pdf")
-            print("[R2] Downloading book...")
-            r2.download_file(R2_BUCKET_NAME,FILE_KEY,pdf)
-            print(f"[R2] {os.path.getsize(pdf)/1024/1024:.1f} MB")
-            pages=extract_pages(pdf)
-            chunks=make_chunks(pages)
-            saved=save_chunks(chunks)
-            print(f"[BANK] {len(saved)} knowledge chunks available")
-            counts=question_counts_by_chunk()
-            # Continuous background growth: do NOT skip a chunk merely because it
-            # already has questions. Pick the least-covered chunks so every book
-            # keeps producing more questions on future scheduled runs.
-            ranked=sorted(saved, key=lambda c: (counts.get(str(c["id"]), 0), c["chunk_index"]))
-            selected=ranked[:max(1, min(CHUNKS_PER_RUN, len(ranked)))]
-            print(f"[BANK] Existing question coverage: {sum(counts.values())} questions across {len(counts)} chunks.")
-            print(f"[BANK] This run will expand {len(selected)} chunks (lowest coverage first).")
-            total=0
-            for pos,chunk in enumerate(selected,1):
-                if daily_quota_reached():
-                    print("[QUOTA] Daily target reached for this exam track. Stopping this worker.")
-                    break
-                cid=str(chunk["id"])
-                existing_count=counts.get(cid,0)
-                print(f"[BANK] expansion {pos}/{len(selected)} | chunk {chunk['chunk_index']+1}/{len(saved)} | existing {existing_count} questions | pages {chunk['page_start']}-{chunk['page_end']}")
-                batch=[]
-                for p in range(1,AI_PASSES_PER_CHUNK+1):
-                    try:
-                        generated=gemini({"content":chunk["content"],"pages":list(range(chunk["page_start"],chunk["page_end"]+1)),"chapter":chunk.get("chapter"),"id":chunk["id"],"existing_question_count":existing_count,"run_pass":p},p)
-                        batch.extend([prepare(q,{"id":chunk["id"],"chapter":chunk.get("chapter"),"pages":list(range(chunk["page_start"],chunk["page_end"]+1))}) for q in generated])
-                    except Exception as e:
-                        print("[BANK] pass failed:",e)
-                saved_count=save_questions(batch)
-                total+=saved_count
-                print(f"[BANK] +{saved_count} questions (total this run {total})")
-            print(f"SUCCESS: background bank processing complete. Added {total} questions.")
-    except Exception as e:
-        print("PROCESSING FAILED:",e)
-        raise
+    if not all([BOOK_ID,FILE_KEY,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,SUPABASE_URL,SUPABASE_SECRET_KEY]):
+        raise RuntimeError("Missing required worker environment variables.")
+    print(f"MEDQ MCQ TURBO | {BOOK_ID} | {BOOK_SUBJECT} | {BOOK_EXAM_TRACK}")
+    with open("/tmp/book.pdf","wb") as f:
+        r2.download_fileobj(R2_BUCKET_NAME,FILE_KEY,f)
+    existing=existing_stems()
+    detected=[]
+    for page,text in page_texts("/tmp/book.pdf"):
+        if not text.strip(): continue
+        for q in parse_mcqs(text):
+            sig=q["stem"].lower()
+            if sig in existing: continue
+            q["source_page"]=page
+            q["chapter"]=BOOK_SUBJECT
+            q["topic"]=BOOK_SUBJECT
+            q["exam_type"]=exam_type()
+            q["question_type"]="recall"
+            q["difficulty"]="medium"
+            q["explanation"]="Answer verified from the source question/answer key." if q["correct_option"] else ""
+            detected.append(q)
+            if len(detected)>=MAX_MCQS_PER_RUN: break
+        if len(detected)>=MAX_MCQS_PER_RUN: break
+
+    print(f"Detected {len(detected)} new MCQs before AI enrichment.")
+    missing=[q for q in detected if not q["correct_option"] or not q["explanation"]]
+    # Enrich only missing metadata/answers, in parallel batches.
+    if GEMINI_API_KEY and missing:
+        batches=[missing[i:i+AI_BATCH_SIZE] for i in range(0,len(missing),AI_BATCH_SIZE)]
+        def run(b): return gemini_batch(b)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_AI_PARALLEL) as ex:
+            for batch,res in zip(batches, ex.map(run,batches)):
+                for item in res or []:
+                    idx=item.get("index")
+                    if isinstance(idx,int) and 0<=idx<len(batch):
+                        q=batch[idx]
+                        q["correct_option"]=str(item.get("correct_option") or q["correct_option"] or "A").upper()[:1]
+                        q["explanation"]=norm(item.get("explanation")) or q["explanation"]
+                        q["topic"]=norm(item.get("topic")) or q["topic"]
+                        q["difficulty"]=str(item.get("difficulty") or q["difficulty"]).lower()
+                        q["question_type"]=norm(item.get("question_type")) or q["question_type"]
+    # Save only questions with a valid answer. Never invent an answer.
+    rows=[]
+    for q in detected:
+        if q.get("correct_option") in list("ABCDE") and all(q.get(k) for k in [
+            "stem","option_a","option_b","option_c","option_d","option_e"
+        ]):
+            rows.append({
+                "book_id":BOOK_ID,
+                "exam_type":q["exam_type"],
+                "question_type":q["question_type"],
+                "stem":q["stem"],
+                "option_a":q["option_a"],
+                "option_b":q["option_b"],
+                "option_c":q["option_c"],
+                "option_d":q["option_d"],
+                "option_e":q["option_e"],
+                "correct_option":q["correct_option"],
+                "explanation":q["explanation"],
+                "subject":BOOK_SUBJECT,
+                "chapter":q["chapter"],
+                "topic":q["topic"],
+                "difficulty":q["difficulty"],
+                "source_page":q["source_page"]
+            })
+    saved=save(rows)
+    print(f"MEDQ MCQ TURBO COMPLETE: saved {saved} questions.")
+    print("Run again to continue from the next unseen questions; existing stems are skipped.")
 
 if __name__=="__main__":
     main()
