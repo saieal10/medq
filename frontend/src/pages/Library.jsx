@@ -11,6 +11,7 @@ import {
   LogOut,
   RotateCcw,
   Target,
+  Trash2,
   Upload,
   XCircle
 } from 'lucide-react'
@@ -374,6 +375,46 @@ export default function Library({ session }) {
       setUploadStage('')
     } finally {
       setUploading(false)
+    }
+  }
+
+  async function deleteBook(book) {
+    if (!isAdmin) {
+      setError('Only the MedQ administrator can delete books.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Delete "${book.title}"? This removes the book, its generated questions, chunks, and processing data from MedQ. This cannot be undone.`
+    )
+
+    if (!confirmed) return
+    if (!API_URL) {
+      setError('MedQ backend URL is not configured.')
+      return
+    }
+
+    setError('')
+    setSuccess('')
+
+    try {
+      const token = session?.access_token
+      const response = await fetch(`${API_URL}/api/books/${book.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(result.detail || 'Could not delete the book.')
+      }
+
+      setSuccess(`Deleted "${book.title}" and its generated MedQ data.`)
+      await loadBooks({ silent: true })
+    } catch (err) {
+      setError(err.message || 'Could not delete the book.')
     }
   }
 
@@ -792,6 +833,7 @@ export default function Library({ session }) {
                 description="Books assigned to the AMC preparation track."
                 books={books.filter((book) => getBookTrack(book) === 'amc')}
                 onRefresh={() => loadBooks({ silent: true })}
+                onDelete={deleteBook}
               />
 
               <BookGroup
@@ -799,6 +841,7 @@ export default function Library({ session }) {
                 description="Books assigned to the FMGE / NEET-PG preparation track."
                 books={books.filter((book) => getBookTrack(book) === 'fmge_neetpg')}
                 onRefresh={() => loadBooks({ silent: true })}
+                onDelete={deleteBook}
               />
 
             </div>
@@ -831,7 +874,7 @@ function getBookTrackLabel(book) {
   return EXAM_TRACKS[getBookTrack(book)]?.label || 'AMC'
 }
 
-function BookGroup({ title, description, books, onRefresh }) {
+function BookGroup({ title, description, books, onRefresh, onDelete }) {
   return (
     <section
       style={{
@@ -851,7 +894,7 @@ function BookGroup({ title, description, books, onRefresh }) {
         </div>
       ) : (
         books.map((book) => (
-          <BookRow key={book.id} book={book} onRefresh={onRefresh} />
+          <BookRow key={book.id} book={book} onRefresh={onRefresh} onDelete={onDelete} />
         ))
       )}
     </section>
@@ -859,7 +902,7 @@ function BookGroup({ title, description, books, onRefresh }) {
 }
 
 
-function BookRow({ book, onRefresh }) {
+function BookRow({ book, onRefresh, onDelete }) {
   const progress = getBookProgress(book)
   const statusInfo = getStatusInfo(book)
 
@@ -922,7 +965,31 @@ function BookRow({ book, onRefresh }) {
 
         </div>
 
-        <StatusBadge book={book} />
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            flexWrap: 'wrap',
+            justifyContent: 'flex-end'
+          }}
+        >
+          <StatusBadge book={book} />
+          <button
+            type="button"
+            className="btn"
+            onClick={() => onDelete(book)}
+            title="Delete book"
+            aria-label={`Delete ${book.title}`}
+            style={{
+              padding: '8px 11px',
+              minHeight: '44px'
+            }}
+          >
+            <Trash2 size={17} />
+            Delete
+          </button>
+        </div>
 
       </div>
 
