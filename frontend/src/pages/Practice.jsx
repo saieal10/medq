@@ -228,10 +228,22 @@ export default function Practice({
     bookChunks,
     setBookChunks
   ] = useState([])
+
+  const [
+    generatingQuestions,
+    setGeneratingQuestions
+  ] = useState(false)
+
   const [
     generationMessage,
     setGenerationMessage
   ] = useState('')
+
+  const [
+    generationCount,
+    setGenerationCount
+  ] = useState(20)
+
   const [
     loading,
     setLoading
@@ -256,6 +268,11 @@ export default function Practice({
     subject,
     setSubject
   ] = useState('all')
+
+  const [
+    searchText,
+    setSearchText
+  ] = useState('')
 
   const [
     bookId,
@@ -620,18 +637,30 @@ export default function Practice({
   // AVAILABLE FILTER VALUES
   // =======================================================
 
+  const AMC_SUBJECTS = [
+    'Adult Health — Medicine',
+    'Adult Health — Surgery',
+    "Women's Health — Obstetrics & Gynaecology",
+    'Child Health — Paediatrics',
+    'Mental Health — Psychiatry',
+    'Population Health & Ethics',
+  ]
+
+  const FMGE_SUBJECTS = [
+    'Anatomy', 'Physiology', 'Biochemistry', 'Pathology',
+    'Pharmacology', 'Microbiology', 'Forensic Medicine',
+    'Community Medicine (PSM)', 'Medicine', 'Surgery',
+    'Obstetrics & Gynaecology', 'Pediatrics', 'Orthopedics',
+    'ENT', 'Ophthalmology', 'Dermatology', 'Psychiatry',
+    'Radiology', 'Anaesthesiology',
+  ]
+
   const subjects = useMemo(() => {
-    return [
-      ...new Set(
-        questions
-          .map(
-            (question) =>
-              question.subject
-          )
-          .filter(Boolean)
-      )
-    ].sort()
-  }, [questions])
+    if (examMode === 'amc') return AMC_SUBJECTS
+    if (examMode === 'fmge') return FMGE_SUBJECTS
+    return [...new Set([...AMC_SUBJECTS, ...FMGE_SUBJECTS])]
+  }, [examMode])
+
 
 
   const eligibleBooks = useMemo(() => {
@@ -710,12 +739,33 @@ export default function Practice({
             question.difficulty ===
               difficulty
 
+          const normalizedSearch =
+            searchText.trim().toLowerCase()
+
+          const searchMatches =
+            !normalizedSearch ||
+            [
+              question.subject,
+              question.chapter,
+              question.topic,
+              question.stem,
+              question.option_a,
+              question.option_b,
+              question.option_c,
+              question.option_d,
+              question.option_e
+            ]
+              .filter(Boolean)
+              .some((value) =>
+                String(value).toLowerCase().includes(normalizedSearch)
+              )
 
           return (
             examMatches &&
             subjectMatches &&
             bookMatches &&
-            difficultyMatches
+            difficultyMatches &&
+            searchMatches
           )
         }
       )
@@ -724,7 +774,8 @@ export default function Practice({
       examMode,
       subject,
       bookId,
-      difficulty
+      difficulty,
+      searchText
     ])
 
 
@@ -889,6 +940,105 @@ export default function Practice({
         question.chapter === chapterName
       )
     }).length
+  }
+
+
+  async function generateQuestionsForChapter() {
+    if (bookId === 'all' || chapter === 'all') {
+      setGenerationMessage(
+        'Choose one book and one chapter first.'
+      )
+      return
+    }
+
+    setGeneratingQuestions(true)
+    setGenerationMessage('')
+    setError('')
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/questions/generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization:
+              `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            book_id: bookId,
+            chapter,
+            exam_mode: examMode,
+            count: generationCount
+          })
+        }
+      )
+
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+          'Could not start question generation.'
+        )
+      }
+
+      setGenerationMessage(
+        `Generation started for ${generationCount} ${examMode.toUpperCase()} question${generationCount === 1 ? '' : 's'}. MedQ will add them when the worker finishes.`
+      )
+
+      // Poll the question bank while the GitHub worker runs.
+      let checks = 0
+      const startingCount = questionCountForChapter(chapter)
+
+      const timer = window.setInterval(async () => {
+        checks += 1
+
+        const { data: freshQuestions } = await supabase
+          .from('questions')
+          .select('*')
+          .eq('book_id', bookId)
+          .eq('chapter', chapter)
+          .order('created_at', { ascending: false })
+
+        if (Array.isArray(freshQuestions)) {
+          setQuestions((current) => {
+            const other = current.filter(
+              (item) => !(
+                item.book_id === bookId &&
+                item.chapter === chapter
+              )
+            )
+            return [...freshQuestions, ...other]
+          })
+
+          if (freshQuestions.length > startingCount) {
+            window.clearInterval(timer)
+            setGeneratingQuestions(false)
+            setGenerationMessage(
+              `${freshQuestions.length - startingCount} new question${freshQuestions.length - startingCount === 1 ? '' : 's'} added. You can start practising now.`
+            )
+          }
+        }
+
+        // Stop browser polling after 10 minutes. The worker may still finish later.
+        if (checks >= 40) {
+          window.clearInterval(timer)
+          setGeneratingQuestions(false)
+          setGenerationMessage(
+            'Generation is still running or the AI provider is busy. The questions will appear automatically after the worker succeeds.'
+          )
+        }
+      }, 15000)
+
+    } catch (generationError) {
+      setGeneratingQuestions(false)
+      setGenerationMessage('')
+      setError(
+        generationError?.message ||
+        'Could not start question generation.'
+      )
+    }
   }
 
 
@@ -1705,6 +1855,15 @@ export default function Practice({
 
               <div className="practice-filter-grid">
 
+                <div className="practice-field practice-search-field">
+                  <label>Search topic / question (optional)</label>
+                  <input
+                    type="search"
+                    value={searchText}
+                    onChange={(event) => setSearchText(event.target.value)}
+                    placeholder="e.g. DKA, atrial fibrillation, nephrotic syndrome..."
+                  />
+                </div>
 
                 <div className="practice-field">
 
@@ -2024,15 +2183,76 @@ export default function Practice({
               </div>
 
 
-              <div
-                className="panel"
-                style={{ marginTop: '18px', padding: '14px 16px' }}
-              >
-                <strong>Questions come from the MedQ Question Bank.</strong>
-                <small style={{ display: 'block', marginTop: '5px' }}>
-                  Books and Gemini build the bank in the background. Practice never waits for AI generation.
-                </small>
-              </div>
+              {bookId !== 'all' && chapter !== 'all' && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '18px',
+                    padding: '16px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div className="panel-kicker">
+                      BUILD THIS CHAPTER
+                    </div>
+                    <strong>
+                      Need more questions from {chapter}?
+                    </strong>
+                    <small style={{ display: 'block', marginTop: '4px' }}>
+                      MedQ uses this chapter's processed textbook chunks and avoids existing question stems.
+                    </small>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <select
+                      value={generationCount}
+                      onChange={(event) =>
+                        setGenerationCount(Number(event.target.value))
+                      }
+                      disabled={generatingQuestions}
+                    >
+                      <option value={10}>Generate 10</option>
+                      <option value={20}>Generate 20</option>
+                      <option value={50}>Generate 50</option>
+                    </select>
+
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={generatingQuestions}
+                      onClick={generateQuestionsForChapter}
+                    >
+                      {generatingQuestions
+                        ? 'Generating…'
+                        : `Generate ${generationCount}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {generationMessage && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '12px',
+                    padding: '12px 16px'
+                  }}
+                >
+                  <small>{generationMessage}</small>
+                </div>
+              )}
 
               <div className="practice-start-bar">
 
