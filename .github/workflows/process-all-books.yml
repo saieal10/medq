@@ -1,4 +1,4 @@
-name: MedQ MCQ Bank - Direct Fast Continuous
+name: MedQ MCQ Bank - FINAL Direct Extraction
 
 on:
   workflow_dispatch:
@@ -6,51 +6,46 @@ on:
     - cron: '*/30 * * * *'
 
 concurrency:
-  group: medq-direct-mcq-bank
+  group: medq-final-direct-mcq-bank
   cancel-in-progress: false
 
 jobs:
   discover:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Build book matrix
-        id: set-matrix
+      - name: Build real parallel book matrix
+        id: matrix
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: |
           python - <<'PY'
-          import os, json, requests
+          import json, os, requests
           u=os.environ['SUPABASE_URL'].rstrip('/')
           k=os.environ['SUPABASE_SECRET_KEY']
-          headers={'apikey':k,'Authorization':'Bearer '+k}
-          r=requests.get(u+'/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc',headers=headers,timeout=30)
+          h={'apikey':k,'Authorization':'Bearer '+k}
+          r=requests.get(u+'/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc',headers=h,timeout=60)
           r.raise_for_status()
           books=[b for b in r.json() if b.get('id') and b.get('file_key')]
           matrix={'include':[{
-              'book_id':str(b['id']),
-              'file_key':b['file_key'],
-              'subject':b.get('subject') or 'General',
-              'exam_track':b.get('exam_track') or 'FMGE_NEET_PG'
+            'book_id':str(b['id']),
+            'file_key':b['file_key'],
+            'subject':b.get('subject') or 'General',
+            'exam_track':b.get('exam_track') or 'FMGE_NEET_PG'
           } for b in books]}
-          print('Books found:',len(books))
-          with open('/tmp/matrix.json','w') as f: json.dump(matrix,f)
-          print('matrix=',json.dumps(matrix))
-          PY
-          python - <<'PY'
-          import os
-          data=open('/tmp/matrix.json').read()
+          print('BOOKS FOUND:',len(books))
+          print(json.dumps(matrix))
           with open(os.environ['GITHUB_OUTPUT'],'a') as f:
-              f.write('matrix='+data+'\n')
+            f.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
           PY
 
   process:
     needs: discover
     if: ${{ needs.discover.outputs.matrix != '' && needs.discover.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -64,7 +59,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install boto3 botocore supabase requests pymupdf
-      - name: Direct MCQ extraction
+      - name: FINAL direct MCQ extraction
         env:
           BOOK_ID: ${{ matrix.book_id }}
           FILE_KEY: ${{ matrix.file_key }}
@@ -76,7 +71,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          MAX_MCQS_PER_RUN: '2000'
+          MAX_MCQS_PER_RUN: '5000'
           SAVE_BATCH: '250'
           MAX_PAGES: '0'
         run: python worker/process_book.py
