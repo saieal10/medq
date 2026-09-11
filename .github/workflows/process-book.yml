@@ -1,66 +1,50 @@
-name: MedQ Process Single Book
+name: MedQ Process Single Book - Turbo
 
 on:
   workflow_dispatch:
     inputs:
       book_id:
-        description: "Supabase book ID"
         required: true
         type: string
       file_key:
-        description: "R2 file key"
         required: true
         type: string
       subject:
-        description: "Book subject"
         required: true
         type: string
       exam_track:
-        description: "Exam track"
         required: true
         type: choice
-        options: [fmge_neetpg, amc]
-        default: fmge_neetpg
-
-concurrency:
-  group: medq-single-book-${{ inputs.book_id }}
-  cancel-in-progress: false
+        options: [AMC, FMGE_NEET_PG, BOTH]
 
 jobs:
   process:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    env:
-      BOOK_ID: ${{ inputs.book_id }}
-      FILE_KEY: ${{ inputs.file_key }}
-      BOOK_SUBJECT: ${{ inputs.subject }}
-      BOOK_EXAM_TRACK: ${{ inputs.exam_track }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: gemini-3.5-flash
-      QUESTIONS_PER_CHUNK: 8
-      AI_PASSES_PER_CHUNK: 2
-      CHUNKS_PER_RUN: 30
-      DAILY_FMGE_TARGET: 400
-      DAILY_AMC_TARGET: 200
-      AI_RETRIES: 4
-      AI_TIMEOUT: 150
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
-      - name: Install Python dependencies
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
-      - name: Process and expand permanent question bank
+          pip install boto3 botocore supabase requests pymupdf
+      - name: Turbo MCQ extraction
+        env:
+          BOOK_ID: ${{ inputs.book_id }}
+          FILE_KEY: ${{ inputs.file_key }}
+          BOOK_SUBJECT: ${{ inputs.subject }}
+          BOOK_EXAM_TRACK: ${{ inputs.exam_track }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.5-flash
+          MAX_MCQS_PER_RUN: "800"
+          AI_BATCH_SIZE: "50"
+          MAX_AI_PARALLEL: "5"
         run: python worker/process_book.py
