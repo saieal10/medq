@@ -1,36 +1,3678 @@
-import { useEffect, useMemo, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
+
 import { useNavigate } from 'react-router-dom'
-import { Search, SlidersHorizontal, Sparkles, BookOpen, Clock3, Target, ArrowRight, ChevronLeft, ChevronRight, Flag, Bookmark, CheckCircle2, XCircle, RotateCcw, Home, Library, Brain, LogOut } from 'lucide-react'
+
+import {
+  AlertCircle,
+  ArrowLeft,
+  BarChart3,
+  BookOpen,
+  Bookmark,
+  Brain,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Filter,
+  Flag,
+  History as HistoryIcon,
+  Home,
+  Library,
+  LogOut,
+  Play,
+  RotateCcw,
+  Sparkles,
+  Target,
+  Timer,
+  X,
+  XCircle
+} from 'lucide-react'
+
 import { supabase } from '../lib/supabase'
 import Logo from '../components/Logo'
 
-const AMC = ['Adult Health — Medicine','Adult Health — Surgery',"Women's Health — Obstetrics & Gynaecology",'Child Health — Paediatrics','Mental Health — Psychiatry','Population Health & Ethics']
-const FMGE = ['Anatomy','Physiology','Biochemistry','Pathology','Pharmacology','Microbiology','Forensic Medicine','Community Medicine (PSM)','Medicine','Surgery','Obstetrics & Gynaecology','Pediatrics','Orthopedics','ENT','Ophthalmology','Dermatology','Psychiatry','Radiology','Anaesthesiology']
-const COUNTS=[10,20,50,100]
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  'https://medq-api-6vm5.onrender.com'
 
-function shuffle(a){return [...a].sort(()=>Math.random()-0.5)}
-function fmt(s){const m=Math.floor((s||0)/60);const x=(s||0)%60;return `${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`}
 
-export default function Practice(){
- const navigate=useNavigate()
- const [session,setSession]=useState(null),[loading,setLoading]=useState(true),[questions,setQuestions]=useState([]),[books,setBooks]=useState([])
- const [examMode,setExamMode]=useState('fmge'),[subject,setSubject]=useState('all'),[difficulty,setDifficulty]=useState('all'),[query,setQuery]=useState(''),[count,setCount]=useState(20)
- const [sessionQs,setSessionQs]=useState([]),[index,setIndex]=useState(0),[answer,setAnswer]=useState(null),[submitted,setSubmitted]=useState(false),[answers,setAnswers]=useState({}),[started,setStarted]=useState(false),[finished,setFinished]=useState(false),[seconds,setSeconds]=useState(0),[error,setError]=useState('')
- const subjects=examMode==='amc'?AMC:examMode==='fmge'?FMGE:[...AMC,...FMGE]
- useEffect(()=>{supabase.auth.getSession().then(({data})=>{setSession(data.session);setLoading(false)});},[])
- useEffect(()=>{if(!session)return; (async()=>{const [q,b]=await Promise.all([supabase.from('questions').select('*').order('created_at',{ascending:false}).range(0,9999),supabase.from('books').select('id,title,subject,exam_track').order('created_at',{ascending:false})]);if(q.error)setError(q.error.message);setQuestions(q.data||[]);setBooks(b.data||[])})()},[session])
- useEffect(()=>{if(!started||finished)return;const t=setInterval(()=>setSeconds(s=>s+1),1000);return()=>clearInterval(t)},[started,finished])
- const filtered=useMemo(()=>questions.filter(q=>{const e=(q.exam_type||'').toUpperCase();const exam=examMode==='mixed'||e==='BOTH'||(examMode==='amc'?e==='AMC':e==='FMGE');const sm=subject==='all'||q.subject===subject;const dm=difficulty==='all'||q.difficulty===difficulty;const qm=!query||`${q.stem} ${q.topic||''} ${q.chapter||''}`.toLowerCase().includes(query.toLowerCase());return exam&&sm&&dm&&qm}),[questions,examMode,subject,difficulty,query])
- function start(){const qs=shuffle(filtered).slice(0,count);if(!qs.length){setError('No questions match these filters yet. Try All subjects or clear search.');return}setSessionQs(qs);setIndex(0);setAnswer(null);setSubmitted(false);setAnswers({});setSeconds(0);setStarted(true);setFinished(false);setError('')}
- function choose(x){if(!submitted){setAnswer(x)}}
- function submit(){if(!answer)return;const q=sessionQs[index];setAnswers(a=>({...a,[q.id]:answer}));setSubmitted(true)}
- function next(){if(index<sessionQs.length-1){setIndex(i=>i+1);setAnswer(answers[sessionQs[index+1]?.id]||null);setSubmitted(false)}else setFinished(true)}
- function reset(){setStarted(false);setFinished(false);setSessionQs([]);setIndex(0);setAnswer(null);setSubmitted(false);setAnswers({});setSeconds(0)}
- if(loading)return <div className="medq-load"><div className="medq-spinner"/><p>Loading your question bank…</p></div>
- if(!session)return <div className="medq-load"><p>Please sign in to use Practice.</p></div>
- if(finished){const correct=sessionQs.filter(q=>answers[q.id]===q.correct_option).length;return <div className="medq-page"><Nav navigate={navigate}/><main className="medq-main"><div className="hero"><span className="pill">SESSION COMPLETE</span><h1>{correct}/{sessionQs.length} correct</h1><p>{Math.round(correct/Math.max(1,sessionQs.length)*100)}% accuracy · {fmt(seconds)}</p></div><div className="result-card"><div className="result-score">{Math.round(correct/Math.max(1,sessionQs.length)*100)}%</div><div><h2>Good work.</h2><p>Your attempts remain available to the dashboard and mistakes workflow.</p></div></div><button className="primary-btn" onClick={reset}><RotateCcw size={18}/> New session</button></main></div>}
- if(started){const q=sessionQs[index];const opts=[['A',q.option_a],['B',q.option_b],['C',q.option_c],['D',q.option_d],['E',q.option_e]].filter(x=>x[1]);return <div className="medq-page"><Nav navigate={navigate}/><main className="medq-main"><div className="session-top"><button className="ghost-btn" onClick={reset}><ChevronLeft/> Exit</button><div><b>{index+1}</b> / {sessionQs.length}</div><div className="timer"><Clock3 size={16}/>{fmt(seconds)}</div></div><div className="progress"><span style={{width:`${((index+1)/sessionQs.length)*100}%`}}/></div><article className="question-card"><div className="q-meta"><span>{examMode.toUpperCase()}</span><span>{q.subject}</span><span>{q.difficulty||'medium'}</span></div><h1>{q.stem}</h1><div className="options">{opts.map(([k,v])=><button key={k} className={`option ${answer===k?'selected':''} ${submitted&&q.correct_option===k?'correct':''} ${submitted&&answer===k&&answer!==q.correct_option?'wrong':''}`} onClick={()=>choose(k)}><b>{k}</b><span>{v}</span>{submitted&&q.correct_option===k?<CheckCircle2/>:submitted&&answer===k?<XCircle/>:null}</button>)}</div>{submitted&&<div className="explanation"><strong>Explanation</strong><p>{q.explanation||'Explanation not available for this question.'}</p></div>}<div className="q-actions">{!submitted?<button className="primary-btn" onClick={submit} disabled={!answer}>Check answer <ArrowRight/></button>:<button className="primary-btn" onClick={next}>{index===sessionQs.length-1?'Finish session':'Next question'} <ChevronRight/></button>}</div></article></main></div>}
- return <div className="medq-page"><Nav navigate={navigate}/><main className="medq-main"><section className="hero"><div><span className="pill"><Sparkles size={14}/> MEDQ PRACTICE</span><h1>Practice smarter.<br/><em>Build your session.</em></h1><p>AMC clinical reasoning, FMGE high-yield recall, or a focused topic search — all in one place.</p></div><div className="hero-stat"><strong>{questions.length.toLocaleString()}</strong><span>questions available</span></div></section><div className="exam-tabs">{[['amc','🇦🇺','AMC','Clinical reasoning'],['fmge','🇮🇳','FMGE','High-yield MBBS'],['mixed','🔀','Mixed','AMC + FMGE']].map(x=><button className={examMode===x[0]?'active':''} onClick={()=>{setExamMode(x[0]);setSubject('all')}} key={x[0]}><span>{x[1]}</span><b>{x[2]}</b><small>{x[3]}</small></button>)}</div><section className="control-card"><div className="control-head"><div><span className="section-label">QUESTION FINDER</span><h2>What do you want to practise?</h2></div><SlidersHorizontal/></div><div className="searchbox"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search topic, chapter, diagnosis, drug, or question…" /></div><div className="filter-grid"><label>Subject<select value={subject} onChange={e=>setSubject(e.target.value)}><option value="all">All subjects</option>{subjects.map(s=><option key={s}>{s}</option>)}</select></label><label>Difficulty<select value={difficulty} onChange={e=>setDifficulty(e.target.value)}><option value="all">All levels</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select></label><label>Questions<select value={count} onChange={e=>setCount(Number(e.target.value))}>{COUNTS.map(n=><option key={n}>{n}</option>)}</select></label></div><div className="bank-line"><span><Target/> {filtered.length.toLocaleString()} matching questions</span><span><BookOpen/> {books.length} books connected</span></div>{error&&<div className="error">{error}</div>}<button className="start-btn" onClick={start}>Start practice <ArrowRight/></button></section></main><style>{CSS}</style></div>
+const QUESTION_COUNT_OPTIONS = [
+  10,
+  20,
+  50,
+  100
+]
+
+
+function formatTime(seconds) {
+  const safeSeconds = Math.max(
+    0,
+    Number(seconds) || 0
+  )
+
+  const hours = Math.floor(
+    safeSeconds / 3600
+  )
+
+  const minutes = Math.floor(
+    (safeSeconds % 3600) / 60
+  )
+
+  const secs = safeSeconds % 60
+
+  if (hours > 0) {
+    return [
+      hours,
+      minutes,
+      secs
+    ]
+      .map((value) =>
+        String(value).padStart(2, '0')
+      )
+      .join(':')
+  }
+
+  return [
+    minutes,
+    secs
+  ]
+    .map((value) =>
+      String(value).padStart(2, '0')
+    )
+    .join(':')
 }
-function Nav({navigate}){return <aside className="medq-nav"><Logo/><button onClick={()=>navigate('/dashboard')}><Home/>Dashboard</button><button className="active"><Brain/>Practice</button><button onClick={()=>navigate('/mistakes')}><Flag/>Mistakes</button><button onClick={()=>navigate('/library')}><Library/>Library</button><button className="logout" onClick={()=>supabase.auth.signOut()}><LogOut/>Sign out</button></aside>}
-const CSS=`.medq-page{min-height:100vh;background:radial-gradient(circle at 15% 0%,rgba(76,110,245,.12),transparent 28%),linear-gradient(135deg,#f7f9fc,#eef3f8);color:#172033;font-family:Inter,system-ui,sans-serif}.medq-nav{position:sticky;top:0;height:100vh;width:230px;float:left;padding:24px 16px;box-sizing:border-box;background:#101827;color:white;display:flex;flex-direction:column;gap:8px}.medq-nav button{border:0;background:transparent;color:#b9c4d6;text-align:left;padding:13px;border-radius:12px;display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer}.medq-nav button.active,.medq-nav button:hover{background:#1d2b43;color:white}.medq-nav .logout{margin-top:auto}.medq-main{margin-left:230px;max-width:1050px;padding:42px 48px 70px}.hero{display:flex;justify-content:space-between;gap:28px;align-items:end;margin-bottom:28px}.pill{display:inline-flex;gap:6px;align-items:center;color:#4c6ef5;font-weight:800;letter-spacing:.08em;font-size:11px}.hero h1{font-size:46px;line-height:1.03;margin:12px 0}.hero em{font-style:normal;color:#4c6ef5}.hero p{color:#667085;max-width:620px;font-size:16px}.hero-stat{background:white;border:1px solid #e2e8f0;border-radius:20px;padding:20px 24px;min-width:170px}.hero-stat strong{display:block;font-size:30px}.hero-stat span{color:#667085;font-size:12px}.exam-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.exam-tabs button{background:white;border:1px solid #dfe5ee;border-radius:18px;padding:17px;text-align:left;display:grid;grid-template-columns:auto 1fr;gap:2px 12px;cursor:pointer}.exam-tabs button.active{border-color:#4c6ef5;box-shadow:0 8px 28px rgba(16,24,40,.08);transform:translateY(-1px)}.exam-tabs span{grid-row:span 2;font-size:26px}.exam-tabs b{font-size:17px}.exam-tabs small{color:#667085}.control-card,.question-card,.result-card{background:rgba(255,255,255,.92);border:1px solid #e1e7ef;border-radius:24px;padding:28px;box-shadow:0 18px 50px rgba(31,41,55,.07)}.control-head{display:flex;justify-content:space-between}.section-label{font-size:10px;font-weight:800;color:#667085;letter-spacing:.12em}.control-head h2{margin:7px 0 20px;font-size:24px}.searchbox{display:flex;align-items:center;gap:12px;border:1px solid #d9e0ea;background:#f8fafc;border-radius:15px;padding:13px 15px}.searchbox input{border:0;outline:0;background:transparent;width:100%;font-size:15px}.filter-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-top:14px}.filter-grid label{font-size:12px;color:#667085;font-weight:700}.filter-grid select{display:block;width:100%;margin-top:6px;border:1px solid #d9e0ea;border-radius:12px;padding:12px;background:white;font-size:14px}.bank-line{display:flex;gap:20px;flex-wrap:wrap;margin:18px 0;color:#667085;font-size:13px}.bank-line span{display:flex;gap:7px;align-items:center}.start-btn,.primary-btn{border:0;border-radius:13px;background:#4c6ef5;color:white;padding:13px 18px;font-weight:800;display:inline-flex;align-items:center;gap:9px;cursor:pointer}.start-btn{width:100%;justify-content:center;font-size:15px}.primary-btn:disabled{opacity:.45}.error{background:#fff1f2;color:#b42318;border:1px solid #fecdd3;padding:11px;border-radius:12px;margin:12px 0}.medq-load{padding:80px;text-align:center}.medq-spinner{margin:auto;width:28px;height:28px;border:3px solid #dbe3ef;border-top-color:#4c6ef5;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.session-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.ghost-btn{border:0;background:transparent;display:flex;align-items:center;gap:5px;cursor:pointer}.timer{display:flex;gap:7px;align-items:center;color:#667085}.progress{height:5px;background:#dfe5ee;border-radius:5px;overflow:hidden;margin-bottom:22px}.progress span{display:block;height:100%;background:#4c6ef5}.q-meta{display:flex;gap:8px;flex-wrap:wrap}.q-meta span{font-size:11px;background:#eef2ff;color:#3b5bdb;padding:5px 8px;border-radius:99px}.question-card h1{font-size:24px;line-height:1.45;margin:20px 0}.options{display:grid;gap:10px}.option{border:1px solid #dce2eb;background:white;border-radius:14px;padding:14px;text-align:left;display:flex;align-items:flex-start;gap:12px;cursor:pointer;font-size:15px}.option b{min-width:28px;height:28px;border-radius:50%;background:#f1f4f8;display:grid;place-items:center}.option.selected{border-color:#4c6ef5;background:#f5f7ff}.option.correct{border-color:#16a34a;background:#f0fdf4}.option.wrong{border-color:#dc2626;background:#fef2f2}.option svg{margin-left:auto}.explanation{margin-top:18px;padding:16px;background:#f7f9fc;border-radius:14px;line-height:1.55}.q-actions{display:flex;justify-content:flex-end;margin-top:20px}.result-score{font-size:48px;font-weight:900;color:#4c6ef5}.result-card{display:flex;gap:20px;align-items:center;margin:22px 0}.result-card h2{margin:0}.result-card p{color:#667085}@media(max-width:800px){.medq-nav{position:static;float:none;width:100%;height:auto;flex-direction:row;overflow:auto}.medq-nav button{white-space:nowrap}.medq-nav .logout{margin:0}.medq-main{margin:0;padding:26px 16px}.hero{display:block}.hero-stat{margin-top:18px}.exam-tabs,.filter-grid{grid-template-columns:1fr}.hero h1{font-size:36px}.question-card{padding:20px}}`
+
+
+function normalizeExamType(value) {
+  return String(
+    value || 'both'
+  )
+    .trim()
+    .toUpperCase()
+}
+
+
+function shuffleArray(array) {
+  const copied = [
+    ...array
+  ]
+
+  for (
+    let index = copied.length - 1;
+    index > 0;
+    index -= 1
+  ) {
+    const randomIndex = Math.floor(
+      Math.random() * (index + 1)
+    )
+
+    const temporary =
+      copied[index]
+
+    copied[index] =
+      copied[randomIndex]
+
+    copied[randomIndex] =
+      temporary
+  }
+
+  return copied
+}
+
+
+
+function cleanFilterLabel(value, kind = 'topic') {
+  const label = String(value || '').replace(/\s+/g, ' ').trim()
+
+  if (!label) return null
+  if (label.length < 3 || label.length > 110) return null
+
+  const lower = label.toLowerCase()
+
+  const exactJunk = new Set([
+    'preface',
+    'foreword',
+    'contents',
+    'table of contents',
+    'contributors',
+    'acknowledgments',
+    'acknowledgements',
+    'copyright',
+    'index',
+    'part 1',
+    'part i'
+  ])
+
+  if (exactJunk.has(lower)) return null
+
+  // Common extraction artefacts such as e42, e46, e49, etc.
+  if (/^e\d+[a-z]?$/i.test(label)) return null
+  if (/^(part|section|chapter)\s*[ivxlcdm\d]+$/i.test(label)) return null
+  if (/^part\s+[ivxlcdm\d]+\s*[:.\-–—]/i.test(label)) return null
+  if (/^\d+(\.\d+)*$/.test(label)) return null
+
+  const genericLabels = new Set([
+    'medicine',
+    'surgery',
+    'gastroenterology',
+    'clinical medicine',
+    'general medicine',
+    'general'
+  ])
+  if (genericLabels.has(lower)) return null
+
+  // Non-clinical front/back matter and media/atlas artefacts.
+  const junkPhrases = [
+    'video library',
+    'atlas of',
+    'about the author',
+    'about the editor',
+    'editorial board',
+    'list of contributors',
+    'list of authors',
+    'permissions',
+    'disclaimer',
+    'dedication',
+    'abbreviations',
+    'appendix',
+    'bibliography'
+  ]
+
+  if (junkPhrases.some((phrase) => lower.includes(phrase))) return null
+
+  // Topics should be concise clinical labels rather than extracted sentences.
+  if (kind === 'topic') {
+    const words = label.split(' ').filter(Boolean)
+    if (words.length > 12) return null
+    if (/[?!]$/.test(label)) return null
+  }
+
+  return label
+}
+
+function uniqueCleanLabels(values, kind) {
+  const seen = new Map()
+
+  values.forEach((value) => {
+    const cleaned = cleanFilterLabel(value, kind)
+    if (!cleaned) return
+
+    const key = cleaned.toLowerCase()
+    if (!seen.has(key)) {
+      seen.set(key, cleaned)
+    }
+  })
+
+  return [...seen.values()].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: 'base' })
+  )
+}
+
+
+export default function Practice({
+  session
+}) {
+  const navigate = useNavigate()
+
+
+  // =======================================================
+  // DATABASE DATA
+  // =======================================================
+
+  const [
+    questions,
+    setQuestions
+  ] = useState([])
+
+  const [
+    books,
+    setBooks
+  ] = useState([])
+
+
+  const [
+    bookChunks,
+    setBookChunks
+  ] = useState([])
+
+  const [
+    generatingQuestions,
+    setGeneratingQuestions
+  ] = useState(false)
+
+  const [
+    generationMessage,
+    setGenerationMessage
+  ] = useState('')
+
+  const [
+    generationCount,
+    setGenerationCount
+  ] = useState(20)
+
+  const [
+    loading,
+    setLoading
+  ] = useState(true)
+
+  const [
+    error,
+    setError
+  ] = useState('')
+
+
+  // =======================================================
+  // SETUP FILTERS
+  // =======================================================
+
+  const [
+    examMode,
+    setExamMode
+  ] = useState('mixed')
+
+  const [
+    subject,
+    setSubject
+  ] = useState('all')
+
+  const [
+    bookId,
+    setBookId
+  ] = useState('all')
+
+  const [
+    chapter,
+    setChapter
+  ] = useState('all')
+
+  const [
+    topic,
+    setTopic
+  ] = useState('all')
+
+  const [
+    difficulty,
+    setDifficulty
+  ] = useState('all')
+
+  const [
+    searchQuery,
+    setSearchQuery
+  ] = useState('')
+
+  const [
+    practiceMode,
+    setPracticeMode
+  ] = useState('tutor')
+
+  const [
+    requestedCount,
+    setRequestedCount
+  ] = useState(20)
+
+
+  // =======================================================
+  // SESSION STATE
+  // =======================================================
+
+  const [
+    sessionStarted,
+    setSessionStarted
+  ] = useState(false)
+
+  const [
+    sessionFinished,
+    setSessionFinished
+  ] = useState(false)
+
+  const [
+    practiceSessionId,
+    setPracticeSessionId
+  ] = useState(null)
+
+  const [
+    sessionQuestions,
+    setSessionQuestions
+  ] = useState([])
+
+  const [
+    currentIndex,
+    setCurrentIndex
+  ] = useState(0)
+
+  const [
+    answers,
+    setAnswers
+  ] = useState({})
+
+  const [
+    submittedQuestions,
+    setSubmittedQuestions
+  ] = useState({})
+
+  const [
+    savedAttempts,
+    setSavedAttempts
+  ] = useState({})
+
+  const [
+    flags,
+    setFlags
+  ] = useState({})
+
+  const [
+    elapsedSeconds,
+    setElapsedSeconds
+  ] = useState(0)
+
+  const [
+    saving,
+    setSaving
+  ] = useState(false)
+
+  const [
+    bookmarkedQuestionIds,
+    setBookmarkedQuestionIds
+  ] = useState({})
+
+  const [
+    bookmarkSavingId,
+    setBookmarkSavingId
+  ] = useState(null)
+
+
+  // =======================================================
+  // LOAD DATA
+  // =======================================================
+
+  useEffect(() => {
+    loadPracticeData()
+    loadBookmarks()
+  }, [])
+
+
+  async function loadBookmarks() {
+
+    const {
+      data,
+      error: bookmarkError
+    } = await supabase
+      .from('bookmarks')
+      .select('question_id')
+      .eq(
+        'user_id',
+        session.user.id
+      )
+
+    if (bookmarkError) {
+      console.error(
+        'Unable to load bookmarks:',
+        bookmarkError.message
+      )
+      return
+    }
+
+    const next = {}
+
+    ;(data || []).forEach(
+      (row) => {
+        if (row.question_id) {
+          next[row.question_id] = true
+        }
+      }
+    )
+
+    setBookmarkedQuestionIds(next)
+  }
+
+
+  async function toggleBookmark(question) {
+
+    if (!question?.id) {
+      return
+    }
+
+    const questionId = question.id
+    const isBookmarked =
+      Boolean(
+        bookmarkedQuestionIds[
+          questionId
+        ]
+      )
+
+    setBookmarkSavingId(
+      questionId
+    )
+    setError('')
+
+    if (isBookmarked) {
+
+      const {
+        error: deleteError
+      } = await supabase
+        .from('bookmarks')
+        .delete()
+        .eq(
+          'user_id',
+          session.user.id
+        )
+        .eq(
+          'question_id',
+          questionId
+        )
+
+      if (deleteError) {
+        setError(
+          deleteError.message
+        )
+        setBookmarkSavingId(null)
+        return
+      }
+
+      setBookmarkedQuestionIds(
+        (previous) => {
+          const next = {
+            ...previous
+          }
+
+          delete next[
+            questionId
+          ]
+
+          return next
+        }
+      )
+
+    } else {
+
+      const {
+        error: insertError
+      } = await supabase
+        .from('bookmarks')
+        .insert({
+          user_id:
+            session.user.id,
+          question_id:
+            questionId
+        })
+
+      if (insertError) {
+        setError(
+          insertError.message
+        )
+        setBookmarkSavingId(null)
+        return
+      }
+
+      setBookmarkedQuestionIds(
+        (previous) => ({
+          ...previous,
+          [questionId]: true
+        })
+      )
+    }
+
+    setBookmarkSavingId(null)
+  }
+
+
+  async function loadPracticeData() {
+    setLoading(true)
+    setError('')
+
+    try {
+      // Load the essential Practice data first so the page never waits
+      // for the much larger textbook chapter catalogue.
+      const [
+        questionResponse,
+        bookResponse
+      ] = await Promise.all([
+        supabase
+          .from('questions')
+          .select('*')
+          .order(
+            'created_at',
+            { ascending: false }
+          ),
+
+        supabase
+          .from('books')
+          .select('id,title,subject,status')
+          .order(
+            'created_at',
+            { ascending: false }
+          )
+      ])
+
+      if (questionResponse.error) {
+        throw questionResponse.error
+      }
+
+      setQuestions(
+        questionResponse.data || []
+      )
+
+      if (bookResponse.error) {
+        console.error(
+          'Books load error:',
+          bookResponse.error
+        )
+        setBooks([])
+      } else {
+        setBooks(
+          bookResponse.data || []
+        )
+      }
+
+    } catch (loadError) {
+      console.error(
+        'Practice load error:',
+        loadError
+      )
+
+      setQuestions([])
+      setError(
+        loadError?.message ||
+        'Could not load the Practice question bank.'
+      )
+
+    } finally {
+      // Never leave the whole Practice page stuck behind a spinner.
+      setLoading(false)
+    }
+
+    // Chapter catalogue is secondary. Load it after Practice is usable.
+    loadChapterCatalogue()
+  }
+
+
+  async function loadChapterCatalogue() {
+    try {
+      const { data, error: chunkError } =
+        await supabase
+          .from('book_chunks')
+          .select('book_id,chapter,chunk_index')
+          .not('chapter', 'is', null)
+          .range(0, 9999)
+
+      if (chunkError) {
+        throw chunkError
+      }
+
+      setBookChunks(
+        data || []
+      )
+
+    } catch (chunkError) {
+      console.error(
+        'Chapter catalogue load error:',
+        chunkError
+      )
+
+      // Existing question chapters remain available as the fallback.
+      setBookChunks([])
+    }
+  }
+
+
+  // =======================================================
+  // TIMER
+  // =======================================================
+
+  useEffect(() => {
+    if (
+      !sessionStarted ||
+      sessionFinished
+    ) {
+      return undefined
+    }
+
+    const interval = setInterval(
+      () => {
+        setElapsedSeconds(
+          (value) => value + 1
+        )
+      },
+      1000
+    )
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [
+    sessionStarted,
+    sessionFinished
+  ])
+
+
+  // =======================================================
+  // BOOK LOOKUP
+  // =======================================================
+
+  const bookMap = useMemo(() => {
+    const map = {}
+
+    books.forEach((book) => {
+      map[book.id] = book
+    })
+
+    return map
+  }, [books])
+
+
+  // =======================================================
+  // AVAILABLE FILTER VALUES
+  // =======================================================
+
+  const subjects = useMemo(() => {
+    return [
+      ...new Set(
+        questions
+          .map(
+            (question) =>
+              question.subject
+          )
+          .filter(Boolean)
+      )
+    ].sort()
+  }, [questions])
+
+
+  const eligibleBooks = useMemo(() => {
+    if (subject === 'all') {
+      return books
+    }
+
+    return books.filter(
+      (book) =>
+        !book.subject ||
+        book.subject === subject
+    )
+  }, [
+    books,
+    subject
+  ])
+
+
+  const baseFilteredQuestions =
+    useMemo(() => {
+      return questions.filter(
+        (question) => {
+
+          // -----------------------------------------------
+          // EXAM TYPE
+          // -----------------------------------------------
+
+          const questionExam =
+            normalizeExamType(
+              question.exam_type
+            )
+
+          let examMatches = true
+
+          if (examMode === 'amc') {
+            examMatches =
+              questionExam === 'AMC' ||
+              questionExam === 'BOTH'
+          }
+
+          if (examMode === 'fmge') {
+            examMatches =
+              questionExam === 'FMGE' ||
+              questionExam === 'BOTH'
+          }
+
+          if (examMode === 'mixed') {
+            examMatches = true
+          }
+
+
+          // -----------------------------------------------
+          // SUBJECT
+          // -----------------------------------------------
+
+          const subjectMatches =
+            subject === 'all' ||
+            question.subject === subject
+
+
+          // -----------------------------------------------
+          // BOOK
+          // -----------------------------------------------
+
+          const bookMatches =
+            bookId === 'all' ||
+            question.book_id === bookId
+
+
+          // -----------------------------------------------
+          // DIFFICULTY
+          // -----------------------------------------------
+
+          const difficultyMatches =
+            difficulty === 'all' ||
+            question.difficulty ===
+              difficulty
+
+
+          return (
+            examMatches &&
+            subjectMatches &&
+            bookMatches &&
+            difficultyMatches
+          )
+        }
+      )
+    }, [
+      questions,
+      examMode,
+      subject,
+      bookId,
+      difficulty
+    ])
+
+
+  const chapters = useMemo(() => {
+    // Professional hierarchy: chapters only belong to one selected book.
+    // Never mix Harrison, Gastroenterology, etc. in the same chapter menu.
+    if (bookId === 'all') {
+      return []
+    }
+
+    const firstChunkByChapter = new Map()
+
+    bookChunks
+      .filter((chunk) => chunk.book_id === bookId)
+      .forEach((chunk) => {
+        const cleaned = cleanFilterLabel(
+          chunk.chapter,
+          'chapter'
+        )
+
+        if (!cleaned) return
+
+        const key = cleaned.toLowerCase()
+        const index = Number(chunk.chunk_index) || 0
+
+        if (
+          !firstChunkByChapter.has(key) ||
+          index < firstChunkByChapter.get(key).index
+        ) {
+          firstChunkByChapter.set(key, {
+            label: cleaned,
+            index
+          })
+        }
+      })
+
+    // Fallback for old/small books whose chunks do not yet have clean chapters.
+    baseFilteredQuestions
+      .filter((question) => question.book_id === bookId)
+      .forEach((question) => {
+        const cleaned = cleanFilterLabel(
+          question.chapter,
+          'chapter'
+        )
+
+        if (!cleaned) return
+
+        const key = cleaned.toLowerCase()
+        if (!firstChunkByChapter.has(key)) {
+          firstChunkByChapter.set(key, {
+            label: cleaned,
+            index: 999999
+          })
+        }
+      })
+
+    return [...firstChunkByChapter.values()]
+      .sort((a, b) => {
+        if (a.index !== b.index) {
+          return a.index - b.index
+        }
+        return a.label.localeCompare(b.label)
+      })
+      .map((item) => item.label)
+  }, [
+    bookChunks,
+    bookId,
+    baseFilteredQuestions
+  ])
+
+
+  const chapterFilteredQuestions =
+    useMemo(() => {
+      if (chapter === 'all') {
+        return baseFilteredQuestions
+      }
+
+      return baseFilteredQuestions.filter(
+        (question) =>
+          question.chapter === chapter
+      )
+    }, [
+      baseFilteredQuestions,
+      chapter
+    ])
+
+
+  const topics = useMemo(() => {
+    if (
+      bookId === 'all' ||
+      chapter === 'all'
+    ) {
+      return []
+    }
+
+    return uniqueCleanLabels(
+      chapterFilteredQuestions
+        .filter((question) => question.book_id === bookId)
+        .map((question) => question.topic),
+      'topic'
+    )
+  }, [
+    bookId,
+    chapter,
+    chapterFilteredQuestions
+  ])
+
+
+  const topicFilteredQuestions =
+    useMemo(() => {
+
+      if (topic === 'all') {
+        return chapterFilteredQuestions
+      }
+
+      return chapterFilteredQuestions.filter(
+        (question) =>
+          question.topic === topic
+      )
+
+    }, [
+      chapterFilteredQuestions,
+      topic
+    ])
+
+
+  const finalFilteredQuestions =
+    useMemo(() => {
+      const query = searchQuery.trim().toLowerCase()
+
+      if (!query) {
+        return topicFilteredQuestions
+      }
+
+      return topicFilteredQuestions.filter((question) => {
+        const searchableText = [
+          question.title,
+          question.question,
+          question.stem,
+          question.subject,
+          question.chapter,
+          question.topic,
+          question.explanation,
+          question.option_a,
+          question.option_b,
+          question.option_c,
+          question.option_d,
+          question.option_e
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+
+        return searchableText.includes(query)
+      })
+    }, [
+      topicFilteredQuestions,
+      searchQuery
+    ])
+
+
+  // =======================================================
+  // RESET DEPENDENT FILTERS
+  // =======================================================
+
+  useEffect(() => {
+    setBookId('all')
+    setChapter('all')
+    setTopic('all')
+  }, [
+    subject
+  ])
+
+
+  useEffect(() => {
+    setChapter('all')
+    setTopic('all')
+  }, [
+    bookId
+  ])
+
+
+  useEffect(() => {
+    setTopic('all')
+  }, [
+    chapter
+  ])
+
+  useEffect(() => {
+    if (
+      chapter !== 'all' &&
+      !chapters.includes(chapter)
+    ) {
+      setChapter('all')
+    }
+  }, [
+    chapter,
+    chapters
+  ])
+
+
+  useEffect(() => {
+    if (
+      topic !== 'all' &&
+      !topics.includes(topic)
+    ) {
+      setTopic('all')
+    }
+  }, [
+    topic,
+    topics
+  ])
+
+
+
+  function questionCountForChapter(chapterName) {
+    return questions.filter((question) => {
+      const examMatches =
+        examMode === 'mixed' ||
+        question.exam_type === examMode ||
+        question.exam_type === 'both'
+
+      const bookMatches =
+        bookId === 'all' ||
+        question.book_id === bookId
+
+      const subjectMatches =
+        subject === 'all' ||
+        question.subject === subject
+
+      return (
+        examMatches &&
+        bookMatches &&
+        subjectMatches &&
+        question.chapter === chapterName
+      )
+    }).length
+  }
+
+
+  async function generateQuestionsForChapter() {
+    if (bookId === 'all' || chapter === 'all') {
+      setGenerationMessage(
+        'Choose one book and one chapter first.'
+      )
+      return
+    }
+
+    setGeneratingQuestions(true)
+    setGenerationMessage('')
+    setError('')
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/questions/generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization:
+              `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            book_id: bookId,
+            chapter,
+            exam_mode: examMode,
+            count: generationCount
+          })
+        }
+      )
+
+      const data = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+          'Could not start question generation.'
+        )
+      }
+
+      setGenerationMessage(
+        `Generation started for ${generationCount} ${examMode.toUpperCase()} question${generationCount === 1 ? '' : 's'}. MedQ will add them when the worker finishes.`
+      )
+
+      // Poll the question bank while the GitHub worker runs.
+      let checks = 0
+      const startingCount = questionCountForChapter(chapter)
+
+      const timer = window.setInterval(async () => {
+        checks += 1
+
+        const { data: freshQuestions } = await supabase
+          .from('questions')
+          .select('*')
+          .eq('book_id', bookId)
+          .eq('chapter', chapter)
+          .order('created_at', { ascending: false })
+
+        if (Array.isArray(freshQuestions)) {
+          setQuestions((current) => {
+            const other = current.filter(
+              (item) => !(
+                item.book_id === bookId &&
+                item.chapter === chapter
+              )
+            )
+            return [...freshQuestions, ...other]
+          })
+
+          if (freshQuestions.length > startingCount) {
+            window.clearInterval(timer)
+            setGeneratingQuestions(false)
+            setGenerationMessage(
+              `${freshQuestions.length - startingCount} new question${freshQuestions.length - startingCount === 1 ? '' : 's'} added. You can start practising now.`
+            )
+          }
+        }
+
+        // Stop browser polling after 10 minutes. The worker may still finish later.
+        if (checks >= 40) {
+          window.clearInterval(timer)
+          setGeneratingQuestions(false)
+          setGenerationMessage(
+            'Generation is still running or the AI provider is busy. The questions will appear automatically after the worker succeeds.'
+          )
+        }
+      }, 15000)
+
+    } catch (generationError) {
+      setGeneratingQuestions(false)
+      setGenerationMessage('')
+      setError(
+        generationError?.message ||
+        'Could not start question generation.'
+      )
+    }
+  }
+
+
+  // =======================================================
+  // START SESSION
+  // =======================================================
+
+  async function startPractice() {
+    if (finalFilteredQuestions.length === 0) {
+      return
+    }
+
+    setSaving(true)
+    setError('')
+
+    try {
+      const shuffled = shuffleArray(finalFilteredQuestions)
+      const count = Math.min(requestedCount, shuffled.length)
+      const selectedQuestions = shuffled.slice(0, count)
+
+      const {
+        data: createdSession,
+        error: sessionError
+      } = await supabase
+        .from('practice_sessions')
+        .insert({
+          user_id: session.user.id,
+          exam_mode: examMode,
+          practice_mode: practiceMode,
+          subject: subject === 'all' ? null : subject,
+          book_id: bookId === 'all' ? null : bookId,
+          chapter: chapter === 'all' ? null : chapter,
+          topic: topic === 'all' ? null : topic,
+          difficulty: difficulty === 'all' ? null : difficulty,
+          requested_count: requestedCount,
+          question_count: selectedQuestions.length
+        })
+        .select('id')
+        .single()
+
+      if (sessionError) {
+        throw sessionError
+      }
+
+      setPracticeSessionId(createdSession.id)
+      setSessionQuestions(selectedQuestions)
+      setCurrentIndex(0)
+      setAnswers({})
+      setSubmittedQuestions({})
+      setSavedAttempts({})
+      setFlags({})
+      setElapsedSeconds(0)
+      setSessionFinished(false)
+      setSessionStarted(true)
+
+    } catch (startError) {
+      console.error(startError)
+      setError(
+        startError.message ||
+        'Could not start the practice session.'
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+
+  // =======================================================
+  // CURRENT QUESTION
+  // =======================================================
+
+  const currentQuestion =
+    sessionQuestions[
+      currentIndex
+    ] || null
+
+
+  const currentAnswer =
+    currentQuestion
+      ? answers[
+          currentQuestion.id
+        ] || null
+      : null
+
+
+  const currentSubmitted =
+    currentQuestion
+      ? Boolean(
+          submittedQuestions[
+            currentQuestion.id
+          ]
+        )
+      : false
+
+
+  const correctOption =
+    currentQuestion
+      ?.correct_option
+      ?.toUpperCase()
+
+
+  const options =
+    currentQuestion
+      ? [
+          [
+            'A',
+            currentQuestion.option_a
+          ],
+          [
+            'B',
+            currentQuestion.option_b
+          ],
+          [
+            'C',
+            currentQuestion.option_c
+          ],
+          [
+            'D',
+            currentQuestion.option_d
+          ],
+          [
+            'E',
+            currentQuestion.option_e
+          ]
+        ].filter(
+          ([, text]) =>
+            Boolean(text)
+        )
+      : []
+
+
+  // =======================================================
+  // SELECT ANSWER
+  // =======================================================
+
+  function chooseAnswer(letter) {
+    if (!currentQuestion) {
+      return
+    }
+
+    if (
+      practiceMode === 'tutor' &&
+      currentSubmitted
+    ) {
+      return
+    }
+
+    setAnswers(
+      (previous) => ({
+        ...previous,
+        [currentQuestion.id]:
+          letter
+      })
+    )
+  }
+
+
+  // =======================================================
+  // SAVE ONE ATTEMPT
+  // =======================================================
+
+  async function saveAttempt(
+    question,
+    selectedOption
+  ) {
+    if (
+      !question ||
+      !selectedOption
+    ) {
+      return
+    }
+
+    if (
+      savedAttempts[
+        question.id
+      ]
+    ) {
+      return
+    }
+
+    const answerIsCorrect =
+      selectedOption ===
+      question
+        .correct_option
+        ?.toUpperCase()
+
+    const {
+      error: attemptError
+    } = await supabase
+      .from('attempts')
+      .insert({
+        user_id:
+          session.user.id,
+
+        question_id:
+          question.id,
+
+        selected_option:
+          selectedOption,
+
+        is_correct:
+          answerIsCorrect,
+
+        session_id:
+          practiceSessionId
+      })
+
+    if (attemptError) {
+      throw attemptError
+    }
+
+    setSavedAttempts(
+      (previous) => ({
+        ...previous,
+        [question.id]: true
+      })
+    )
+  }
+
+
+  // =======================================================
+  // TUTOR MODE SUBMIT
+  // =======================================================
+
+  async function submitCurrentAnswer() {
+    if (
+      !currentQuestion ||
+      !currentAnswer ||
+      currentSubmitted
+    ) {
+      return
+    }
+
+    setSaving(true)
+    setError('')
+
+    try {
+
+      await saveAttempt(
+        currentQuestion,
+        currentAnswer
+      )
+
+      setSubmittedQuestions(
+        (previous) => ({
+          ...previous,
+          [currentQuestion.id]:
+            true
+        })
+      )
+
+    } catch (submitError) {
+
+      console.error(
+        submitError
+      )
+
+      setError(
+        submitError.message ||
+        'Could not save your answer.'
+      )
+
+    } finally {
+
+      setSaving(false)
+    }
+  }
+
+
+  // =======================================================
+  // NAVIGATION
+  // =======================================================
+
+  function goToQuestion(index) {
+    if (
+      index < 0 ||
+      index >=
+        sessionQuestions.length
+    ) {
+      return
+    }
+
+    setCurrentIndex(index)
+    setError('')
+  }
+
+
+  function previousQuestion() {
+    goToQuestion(
+      currentIndex - 1
+    )
+  }
+
+
+  function nextQuestion() {
+    if (
+      currentIndex <
+      sessionQuestions.length - 1
+    ) {
+      goToQuestion(
+        currentIndex + 1
+      )
+    }
+  }
+
+
+  // =======================================================
+  // FLAG QUESTION
+  // =======================================================
+
+  function toggleFlag() {
+    if (!currentQuestion) {
+      return
+    }
+
+    setFlags(
+      (previous) => ({
+        ...previous,
+
+        [currentQuestion.id]:
+          !previous[
+            currentQuestion.id
+          ]
+      })
+    )
+  }
+
+
+  // =======================================================
+  // FINISH SESSION
+  // =======================================================
+
+  async function finishSession() {
+    if (
+      sessionQuestions.length === 0
+    ) {
+      return
+    }
+
+    setSaving(true)
+    setError('')
+
+    try {
+
+      const unsavedAttempts = []
+
+      sessionQuestions.forEach(
+        (question) => {
+
+          const selected =
+            answers[
+              question.id
+            ]
+
+          if (
+            selected &&
+            !savedAttempts[
+              question.id
+            ]
+          ) {
+
+            unsavedAttempts.push({
+              user_id:
+                session.user.id,
+
+              question_id:
+                question.id,
+
+              selected_option:
+                selected,
+
+              is_correct:
+                selected ===
+                question
+                  .correct_option
+                  ?.toUpperCase(),
+
+              session_id:
+                practiceSessionId
+            })
+          }
+        }
+      )
+
+      if (
+        unsavedAttempts.length > 0
+      ) {
+
+        const {
+          error: attemptsError
+        } = await supabase
+          .from('attempts')
+          .insert(
+            unsavedAttempts
+          )
+
+        if (attemptsError) {
+          throw attemptsError
+        }
+      }
+
+      if (practiceSessionId) {
+        const {
+          error: sessionUpdateError
+        } = await supabase
+          .from('practice_sessions')
+          .update({
+            answered_count: sessionStats.answered,
+            correct_count: sessionStats.correct,
+            incorrect_count: sessionStats.incorrect,
+            unanswered_count: sessionStats.unanswered,
+            accuracy: sessionStats.accuracy,
+            duration_seconds: elapsedSeconds,
+            finished_at: new Date().toISOString()
+          })
+          .eq('id', practiceSessionId)
+          .eq('user_id', session.user.id)
+
+        if (sessionUpdateError) {
+          throw sessionUpdateError
+        }
+      }
+
+      setSessionFinished(true)
+
+    } catch (finishError) {
+
+      console.error(
+        finishError
+      )
+
+      setError(
+        finishError.message ||
+        'Could not save the session.'
+      )
+
+    } finally {
+
+      setSaving(false)
+    }
+  }
+
+
+  // =======================================================
+  // SESSION STATS
+  // =======================================================
+
+  const sessionStats = useMemo(() => {
+
+    let answered = 0
+    let correct = 0
+    let incorrect = 0
+
+    sessionQuestions.forEach(
+      (question) => {
+
+        const selected =
+          answers[
+            question.id
+          ]
+
+        if (!selected) {
+          return
+        }
+
+        answered += 1
+
+        if (
+          selected ===
+          question
+            .correct_option
+            ?.toUpperCase()
+        ) {
+          correct += 1
+        } else {
+          incorrect += 1
+        }
+      }
+    )
+
+    const unanswered =
+      sessionQuestions.length -
+      answered
+
+    const accuracy =
+      answered > 0
+        ? Math.round(
+            (
+              correct /
+              answered
+            ) * 100
+          )
+        : 0
+
+    return {
+      answered,
+      correct,
+      incorrect,
+      unanswered,
+      accuracy
+    }
+
+  }, [
+    sessionQuestions,
+    answers
+  ])
+
+
+  // =======================================================
+  // RESTART
+  // =======================================================
+
+  function newSession() {
+    setSessionStarted(false)
+    setSessionFinished(false)
+    setPracticeSessionId(null)
+    setSessionQuestions([])
+    setAnswers({})
+    setSubmittedQuestions({})
+    setSavedAttempts({})
+    setFlags({})
+    setCurrentIndex(0)
+    setElapsedSeconds(0)
+    setError('')
+  }
+
+
+  async function signOut() {
+    await supabase.auth.signOut()
+  }
+
+
+  // =======================================================
+  // LOADING
+  // =======================================================
+
+  if (loading) {
+    return (
+      <div className="page-center">
+        <div className="loader" />
+      </div>
+    )
+  }
+
+
+  // =======================================================
+  // MAIN SHELL
+  // =======================================================
+
+  return (
+    <div className="app-shell">
+
+      <aside className="sidebar">
+
+        <Logo />
+
+        <div className="side-nav">
+
+          <button
+            onClick={() =>
+              navigate(
+                '/dashboard'
+              )
+            }
+          >
+            <Home size={18} />
+            Dashboard
+          </button>
+
+          <button
+            className="side-active"
+          >
+            <Brain size={18} />
+            Practice
+          </button>
+
+          <button
+            onClick={() =>
+              navigate('/mistakes')
+            }
+          >
+            <RotateCcw size={18} />
+            Mistakes
+          </button>
+
+          <button
+            onClick={() =>
+              navigate(
+                '/bookmarks'
+              )
+            }
+          >
+            <Bookmark size={18} />
+            Bookmarks
+          </button>
+
+          <button
+            onClick={() =>
+              navigate(
+                '/history'
+              )
+            }
+          >
+            <HistoryIcon size={18} />
+            History
+          </button>
+
+          <button
+            onClick={() =>
+              navigate(
+                '/library'
+              )
+            }
+          >
+            <Library size={18} />
+            Library
+          </button>
+
+        </div>
+
+        <button
+          className="logout"
+          onClick={signOut}
+        >
+          <LogOut size={18} />
+          Sign out
+        </button>
+
+      </aside>
+
+
+      <main className="dashboard-main practice-page">
+
+
+        {/* =================================================
+            SETUP SCREEN
+        ================================================= */}
+
+        {!sessionStarted && (
+
+          <>
+
+            <header className="dash-head">
+
+              <div>
+
+                <div className="eyebrow">
+                  MEDQ PRACTICE
+                </div>
+
+                <h1>
+                  Build your session
+                </h1>
+
+                <p>
+                  Practice specifically for AMC,
+                  FMGE, or combine both patterns.
+                </p>
+
+              </div>
+
+              <div className="user-chip">
+                {session.user.email}
+              </div>
+
+            </header>
+
+
+            {error && (
+
+              <div className="practice-error">
+                <AlertCircle size={18} />
+                {error}
+              </div>
+
+            )}
+
+
+            <section className="exam-selector">
+
+              <button
+                className={
+                  examMode === 'amc'
+                    ? 'exam-card active'
+                    : 'exam-card'
+                }
+                onClick={() =>
+                  setExamMode('amc')
+                }
+              >
+
+                <span className="exam-flag">
+                  🇦🇺
+                </span>
+
+                <div>
+
+                  <strong>
+                    AMC
+                  </strong>
+
+                  <small>
+                    Clinical reasoning
+                    & next-best-step
+                  </small>
+
+                </div>
+
+                {examMode === 'amc' && (
+                  <CheckCircle2
+                    size={20}
+                  />
+                )}
+
+              </button>
+
+
+              <button
+                className={
+                  examMode === 'fmge'
+                    ? 'exam-card active'
+                    : 'exam-card'
+                }
+                onClick={() =>
+                  setExamMode('fmge')
+                }
+              >
+
+                <span className="exam-flag">
+                  🇮🇳
+                </span>
+
+                <div>
+
+                  <strong>
+                    FMGE
+                  </strong>
+
+                  <small>
+                    High-yield MBBS
+                    + clinical application
+                  </small>
+
+                </div>
+
+                {examMode === 'fmge' && (
+                  <CheckCircle2
+                    size={20}
+                  />
+                )}
+
+              </button>
+
+
+              <button
+                className={
+                  examMode === 'mixed'
+                    ? 'exam-card active'
+                    : 'exam-card'
+                }
+                onClick={() =>
+                  setExamMode('mixed')
+                }
+              >
+
+                <span className="exam-flag">
+                  🔀
+                </span>
+
+                <div>
+
+                  <strong>
+                    Mixed
+                  </strong>
+
+                  <small>
+                    AMC + FMGE
+                    together
+                  </small>
+
+                </div>
+
+                {examMode === 'mixed' && (
+                  <CheckCircle2
+                    size={20}
+                  />
+                )}
+
+              </button>
+
+            </section>
+
+
+            <section className="panel practice-setup-panel">
+
+              <div className="practice-section-title">
+
+                <div>
+
+                  <div className="panel-kicker">
+                    SESSION FILTERS
+                  </div>
+
+                  <h2>
+                    Choose what to practise
+                  </h2>
+
+                </div>
+
+                <Filter size={21} />
+
+              </div>
+
+
+              <div
+                className="practice-search-row"
+                style={{
+                  marginBottom: '18px',
+                  position: 'relative'
+                }}
+              >
+                <label
+                  htmlFor="practice-search"
+                  style={{
+                    display: 'block',
+                    marginBottom: '8px',
+                    fontWeight: 700
+                  }}
+                >
+                  Search your question bank
+                </label>
+
+                <div
+                  style={{
+                    position: 'relative',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}
+                >
+                  <input
+                    id="practice-search"
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) =>
+                      setSearchQuery(event.target.value)
+                    }
+                    placeholder="Search topic, diagnosis, drug, chapter, question or keyword…"
+                    style={{
+                      width: '100%',
+                      minHeight: '48px',
+                      padding: '0 82px 0 16px',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border, #d9dee8)',
+                      outline: 'none',
+                      fontSize: '15px',
+                      background: 'var(--card, #fff)'
+                    }}
+                  />
+
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      aria-label="Clear search"
+                      style={{
+                        position: 'absolute',
+                        right: '10px',
+                        border: 0,
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        padding: '8px',
+                        color: 'inherit'
+                      }}
+                    >
+                      <X size={18} />
+                    </button>
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: '7px',
+                    fontSize: '13px',
+                    color: 'var(--muted, #667085)'
+                  }}
+                >
+                  {searchQuery.trim()
+                    ? `${finalFilteredQuestions.length} matching question${finalFilteredQuestions.length === 1 ? '' : 's'}`
+                    : `${baseFilteredQuestions.length} questions available with these filters`}
+                </div>
+              </div>
+
+
+              <div className="practice-filter-grid">
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Subject
+                  </label>
+
+                  <select
+                    value={subject}
+                    onChange={
+                      (event) =>
+                        setSubject(
+                          event.target.value
+                        )
+                    }
+                  >
+
+                    <option value="all">
+                      All subjects
+                    </option>
+
+                    {subjects.map(
+                      (item) => (
+
+                        <option
+                          key={item}
+                          value={item}
+                        >
+                          {item} ({questionCountForChapter(item)})
+                        </option>
+
+                      )
+                    )}
+
+                  </select>
+
+                </div>
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Book
+                  </label>
+
+                  <select
+                    value={bookId}
+                    onChange={
+                      (event) =>
+                        setBookId(
+                          event.target.value
+                        )
+                    }
+                  >
+
+                    <option value="all">
+                      All books
+                    </option>
+
+                    {eligibleBooks.map(
+                      (book) => (
+
+                        <option
+                          key={book.id}
+                          value={book.id}
+                        >
+                          {book.title}
+                        </option>
+
+                      )
+                    )}
+
+                  </select>
+
+                </div>
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Chapter
+                  </label>
+
+                  <select
+                    value={chapter}
+                    onChange={
+                      (event) =>
+                        setChapter(
+                          event.target.value
+                        )
+                    }
+                  >
+
+                    <option value="all">
+                      All chapters
+                    </option>
+
+                    {chapters.map(
+                      (item) => (
+
+                        <option
+                          key={item}
+                          value={item}
+                        >
+                          {item}
+                        </option>
+
+                      )
+                    )}
+
+                  </select>
+
+                </div>
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Topic
+                  </label>
+
+                  <select
+                    value={topic}
+                    onChange={
+                      (event) =>
+                        setTopic(
+                          event.target.value
+                        )
+                    }
+                  >
+
+                    <option value="all">
+                      All topics
+                    </option>
+
+                    {topics.map(
+                      (item) => (
+
+                        <option
+                          key={item}
+                          value={item}
+                        >
+                          {item}
+                        </option>
+
+                      )
+                    )}
+
+                  </select>
+
+                </div>
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Difficulty
+                  </label>
+
+                  <select
+                    value={difficulty}
+                    onChange={
+                      (event) =>
+                        setDifficulty(
+                          event.target.value
+                        )
+                    }
+                  >
+
+                    <option value="all">
+                      All difficulties
+                    </option>
+
+                    <option value="easy">
+                      Easy
+                    </option>
+
+                    <option value="medium">
+                      Medium
+                    </option>
+
+                    <option value="hard">
+                      Hard
+                    </option>
+
+                  </select>
+
+                </div>
+
+
+                <div className="practice-field">
+
+                  <label>
+                    Questions
+                  </label>
+
+                  <select
+                    value={requestedCount}
+                    onChange={
+                      (event) =>
+                        setRequestedCount(
+                          Number(
+                            event.target.value
+                          )
+                        )
+                    }
+                  >
+
+                    {
+                      QUESTION_COUNT_OPTIONS
+                        .map(
+                          (count) => (
+
+                            <option
+                              key={count}
+                              value={count}
+                            >
+                              {count} questions
+                            </option>
+
+                          )
+                        )
+                    }
+
+                  </select>
+
+                </div>
+
+
+              </div>
+
+
+              <div className="practice-mode-section">
+
+                <div>
+
+                  <div className="panel-kicker">
+                    PRACTICE STYLE
+                  </div>
+
+                  <h3>
+                    Choose your mode
+                  </h3>
+
+                </div>
+
+
+                <div className="practice-mode-grid">
+
+
+                  <button
+                    className={
+                      practiceMode ===
+                      'tutor'
+                        ? 'practice-mode-card active'
+                        : 'practice-mode-card'
+                    }
+                    onClick={() =>
+                      setPracticeMode(
+                        'tutor'
+                      )
+                    }
+                  >
+
+                    <Brain size={24} />
+
+                    <div>
+
+                      <strong>
+                        Tutor Mode
+                      </strong>
+
+                      <span>
+                        See the answer and
+                        explanation immediately.
+                      </span>
+
+                    </div>
+
+                  </button>
+
+
+                  <button
+                    className={
+                      practiceMode ===
+                      'exam'
+                        ? 'practice-mode-card active'
+                        : 'practice-mode-card'
+                    }
+                    onClick={() =>
+                      setPracticeMode(
+                        'exam'
+                      )
+                    }
+                  >
+
+                    <Timer size={24} />
+
+                    <div>
+
+                      <strong>
+                        Exam Mode
+                      </strong>
+
+                      <span>
+                        Answer the whole session
+                        before seeing results.
+                      </span>
+
+                    </div>
+
+                  </button>
+
+
+                </div>
+
+              </div>
+
+
+              {bookId !== 'all' && chapter !== 'all' && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '18px',
+                    padding: '16px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <div>
+                    <div className="panel-kicker">
+                      BUILD THIS CHAPTER
+                    </div>
+                    <strong>
+                      Need more questions from {chapter}?
+                    </strong>
+                    <small style={{ display: 'block', marginTop: '4px' }}>
+                      MedQ uses this chapter's processed textbook chunks and avoids existing question stems.
+                    </small>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <select
+                      value={generationCount}
+                      onChange={(event) =>
+                        setGenerationCount(Number(event.target.value))
+                      }
+                      disabled={generatingQuestions}
+                    >
+                      <option value={10}>Generate 10</option>
+                      <option value={20}>Generate 20</option>
+                      <option value={50}>Generate 50</option>
+                    </select>
+
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={generatingQuestions}
+                      onClick={generateQuestionsForChapter}
+                    >
+                      {generatingQuestions
+                        ? 'Generating…'
+                        : `Generate ${generationCount}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {generationMessage && (
+                <div
+                  className="panel"
+                  style={{
+                    marginTop: '12px',
+                    padding: '12px 16px'
+                  }}
+                >
+                  <small>{generationMessage}</small>
+                </div>
+              )}
+
+              <div className="practice-start-bar">
+
+                <div>
+
+                  <span>
+                    Available questions
+                  </span>
+
+                  <strong>
+                    {
+                      finalFilteredQuestions
+                        .length
+                    }
+                  </strong>
+
+                </div>
+
+
+                <button
+                  className="btn btn-primary practice-start-button"
+                  disabled={
+                    finalFilteredQuestions
+                      .length === 0
+                  }
+                  onClick={
+                    startPractice
+                  }
+                >
+
+                  <Play size={19} />
+
+                  Start Practice
+
+                </button>
+
+              </div>
+
+            </section>
+
+          </>
+
+        )}
+
+
+        {/* =================================================
+            ACTIVE SESSION
+        ================================================= */}
+
+        {
+          sessionStarted &&
+          !sessionFinished &&
+          currentQuestion &&
+          (
+
+            <div className="mcq-workspace">
+
+
+              {/* ==========================================
+                  SESSION HEADER
+              ========================================== */}
+
+              <section className="mcq-session-header">
+
+                <div className="mcq-session-title">
+
+                  <button
+                    className="icon-button"
+                    onClick={
+                      newSession
+                    }
+                    title="Exit session"
+                  >
+                    <ArrowLeft size={19} />
+                  </button>
+
+                  <div>
+
+                    <span>
+                      {
+                        examMode === 'amc'
+                          ? 'AMC Practice'
+                          : examMode === 'fmge'
+                            ? 'FMGE Practice'
+                            : 'Mixed Practice'
+                      }
+                    </span>
+
+                    <strong>
+                      Question {
+                        currentIndex + 1
+                      } of {
+                        sessionQuestions.length
+                      }
+                    </strong>
+
+                  </div>
+
+                </div>
+
+
+                <div className="mcq-header-stats">
+
+                  <div>
+
+                    <Clock3 size={17} />
+
+                    <span>
+                      {
+                        formatTime(
+                          elapsedSeconds
+                        )
+                      }
+                    </span>
+
+                  </div>
+
+                  <div>
+
+                    <Target size={17} />
+
+                    <span>
+                      {
+                        sessionStats
+                          .answered
+                      } answered
+                    </span>
+
+                  </div>
+
+                </div>
+
+              </section>
+
+
+              <div className="mcq-progress-track">
+
+                <div
+                  style={{
+                    width:
+                      `${
+                        (
+                          (
+                            currentIndex + 1
+                          ) /
+                          sessionQuestions
+                            .length
+                        ) * 100
+                      }%`
+                  }}
+                />
+
+              </div>
+
+
+              <div className="mcq-layout">
+
+
+                {/* ========================================
+                    QUESTION
+                ======================================== */}
+
+                <section className="mcq-main">
+
+
+                  <div className="mcq-question-card">
+
+
+                    <div className="mcq-question-meta">
+
+                      <div className="question-tags">
+
+                        <span className="exam-question-tag">
+
+                          {
+                            normalizeExamType(
+                              currentQuestion
+                                .exam_type
+                            )
+                          }
+
+                        </span>
+
+
+                        {
+                          currentQuestion
+                            .subject &&
+                          (
+
+                            <span>
+                              {
+                                currentQuestion
+                                  .subject
+                              }
+                            </span>
+
+                          )
+                        }
+
+
+                        {
+                          currentQuestion
+                            .difficulty &&
+                          (
+
+                            <span>
+                              {
+                                currentQuestion
+                                  .difficulty
+                              }
+                            </span>
+
+                          )
+                        }
+
+
+                        {
+                          currentQuestion
+                            .question_type &&
+                          (
+
+                            <span>
+                              {
+                                currentQuestion
+                                  .question_type
+                              }
+                            </span>
+
+                          )
+                        }
+
+                      </div>
+
+
+                      <button
+                        className={
+                          flags[
+                            currentQuestion.id
+                          ]
+                            ? 'question-action active'
+                            : 'question-action'
+                        }
+                        onClick={
+                          toggleFlag
+                        }
+                      >
+
+                        <Flag size={18} />
+
+                        {
+                          flags[
+                            currentQuestion.id
+                          ]
+                            ? 'Flagged'
+                            : 'Flag'
+                        }
+
+                      </button>
+
+                    </div>
+
+
+                    <div className="mcq-source-line">
+
+                      {
+                        currentQuestion
+                          .chapter &&
+                        (
+                          <span>
+                            {
+                              currentQuestion
+                                .chapter
+                            }
+                          </span>
+                        )
+                      }
+
+                      {
+                        currentQuestion
+                          .topic &&
+                        (
+                          <>
+                            <ChevronRight
+                              size={14}
+                            />
+
+                            <span>
+                              {
+                                currentQuestion
+                                  .topic
+                              }
+                            </span>
+                          </>
+                        )
+                      }
+
+                    </div>
+
+
+                    <h2 className="professional-question-stem">
+
+                      {
+                        currentQuestion
+                          .stem
+                      }
+
+                    </h2>
+
+
+                    <div className="professional-options">
+
+                      {
+                        options.map(
+                          (
+                            [
+                              letter,
+                              text
+                            ]
+                          ) => {
+
+                            const selected =
+                              currentAnswer ===
+                              letter
+
+                            const isCorrectOption =
+                              currentSubmitted &&
+                              letter ===
+                                correctOption
+
+                            const isWrongSelected =
+                              currentSubmitted &&
+                              selected &&
+                              letter !==
+                                correctOption
+
+                            return (
+
+                              <button
+                                key={letter}
+                                className={[
+                                  'professional-option',
+
+                                  selected
+                                    ? 'selected'
+                                    : '',
+
+                                  isCorrectOption
+                                    ? 'correct'
+                                    : '',
+
+                                  isWrongSelected
+                                    ? 'wrong'
+                                    : ''
+                                ].join(' ')}
+                                onClick={() =>
+                                  chooseAnswer(
+                                    letter
+                                  )
+                                }
+                              >
+
+                                <span className="professional-option-letter">
+                                  {letter}
+                                </span>
+
+                                <span className="professional-option-text">
+                                  {text}
+                                </span>
+
+
+                                {
+                                  isCorrectOption &&
+                                  (
+                                    <CheckCircle2
+                                      size={21}
+                                    />
+                                  )
+                                }
+
+
+                                {
+                                  isWrongSelected &&
+                                  (
+                                    <XCircle
+                                      size={21}
+                                    />
+                                  )
+                                }
+
+                              </button>
+
+                            )
+                          }
+                        )
+                      }
+
+                    </div>
+
+
+                    {/* ====================================
+                        TUTOR SUBMIT
+                    ==================================== */}
+
+                    {
+                      practiceMode ===
+                        'tutor' &&
+                      !currentSubmitted &&
+                      (
+
+                        <button
+                          className="btn btn-primary mcq-submit-button"
+                          disabled={
+                            !currentAnswer ||
+                            saving
+                          }
+                          onClick={
+                            submitCurrentAnswer
+                          }
+                        >
+
+                          {
+                            saving
+                              ? 'Saving...'
+                              : 'Submit answer'
+                          }
+
+                        </button>
+
+                      )
+                    }
+
+
+                    {/* ====================================
+                        TUTOR RESULT
+                    ==================================== */}
+
+                    {
+                      practiceMode ===
+                        'tutor' &&
+                      currentSubmitted &&
+                      (
+
+                        <div className="tutor-result">
+
+
+                          <div
+                            className={
+                              currentAnswer ===
+                              correctOption
+                                ? 'answer-status success'
+                                : 'answer-status error'
+                            }
+                          >
+
+                            {
+                              currentAnswer ===
+                              correctOption
+                                ? (
+                                  <>
+                                    <CheckCircle2
+                                      size={22}
+                                    />
+
+                                    Correct
+                                  </>
+                                )
+                                : (
+                                  <>
+                                    <XCircle
+                                      size={22}
+                                    />
+
+                                    Incorrect
+
+                                    <span>
+                                      Correct answer:
+                                      {' '}
+                                      {
+                                        correctOption
+                                      }
+                                    </span>
+                                  </>
+                                )
+                            }
+
+                          </div>
+
+
+                          {
+                            currentQuestion
+                              .explanation &&
+                            (
+
+                              <div className="professional-explanation">
+
+                                <div className="explanation-heading">
+
+                                  <Brain size={20} />
+
+                                  <div>
+
+                                    <span>
+                                      EXPLANATION
+                                    </span>
+
+                                    <strong>
+                                      Why this is
+                                      the best answer
+                                    </strong>
+
+                                  </div>
+
+                                </div>
+
+                                <p>
+                                  {
+                                    currentQuestion
+                                      .explanation
+                                  }
+                                </p>
+
+                              </div>
+
+                            )
+                          }
+
+
+                          <div className="question-source-card">
+
+                            <BookOpen
+                              size={19}
+                            />
+
+                            <div>
+
+                              <span>
+                                SOURCE
+                              </span>
+
+                              <strong>
+
+                                {
+                                  currentQuestion
+                                    .book_id &&
+                                  bookMap[
+                                    currentQuestion
+                                      .book_id
+                                  ]
+                                    ? bookMap[
+                                        currentQuestion
+                                          .book_id
+                                      ].title
+
+                                    : 'Uploaded textbook'
+                                }
+
+                              </strong>
+</div>
+
+                          </div>
+
+
+                          <button
+                            className="ask-medbot-button"
+                            disabled={
+                              bookmarkSavingId ===
+                              currentQuestion.id
+                            }
+                            onClick={() =>
+                              toggleBookmark(
+                                currentQuestion
+                              )
+                            }
+                          >
+
+                            <Bookmark
+                              size={19}
+                              fill={
+                                bookmarkedQuestionIds[
+                                  currentQuestion.id
+                                ]
+                                  ? 'currentColor'
+                                  : 'none'
+                              }
+                            />
+
+                            {
+                              bookmarkSavingId ===
+                              currentQuestion.id
+                                ? 'Saving...'
+                                : bookmarkedQuestionIds[
+                                    currentQuestion.id
+                                  ]
+                                  ? 'Remove Bookmark'
+                                  : 'Save Bookmark'
+                            }
+
+                          </button>
+
+
+                          <button
+                            className="ask-medbot-button"
+                            onClick={() =>
+                              window.dispatchEvent(
+                                new CustomEvent(
+                                  'medq:open-medbot',
+                                  {
+                                    detail: {
+                                      questionId: currentQuestion.id
+                                    }
+                                  }
+                                )
+                              )
+                            }
+                          >
+
+                            <Sparkles
+                              size={19}
+                            />
+
+                            Ask MedBot about
+                            this question
+
+                          </button>
+
+                        </div>
+
+                      )
+                    }
+
+
+                  </div>
+
+
+                  {/* ====================================
+                      BOTTOM NAV
+                  ==================================== */}
+
+                  <div className="mcq-navigation">
+
+                    <button
+                      className="btn btn-outline"
+                      disabled={
+                        currentIndex === 0
+                      }
+                      onClick={
+                        previousQuestion
+                      }
+                    >
+
+                      <ChevronLeft
+                        size={18}
+                      />
+
+                      Previous
+
+                    </button>
+
+
+                    {
+                      currentIndex ===
+                      sessionQuestions.length - 1
+                        ? (
+
+                          <button
+                            className="btn btn-primary"
+                            disabled={
+                              saving
+                            }
+                            onClick={
+                              finishSession
+                            }
+                          >
+
+                            <Check
+                              size={18}
+                            />
+
+                            Finish Session
+
+                          </button>
+
+                        )
+                        : (
+
+                          <button
+                            className="btn btn-primary"
+                            onClick={
+                              nextQuestion
+                            }
+                          >
+
+                            Next
+
+                            <ChevronRight
+                              size={18}
+                            />
+
+                          </button>
+
+                        )
+                    }
+
+                  </div>
+
+
+                  {
+                    error &&
+                    (
+
+                      <div className="practice-error">
+
+                        <AlertCircle
+                          size={18}
+                        />
+
+                        {error}
+
+                      </div>
+
+                    )
+                  }
+
+
+                </section>
+
+
+                {/* ========================================
+                    QUESTION NAVIGATOR
+                ======================================== */}
+
+                <aside className="question-navigator">
+
+                  <div className="navigator-head">
+
+                    <div>
+
+                      <span>
+                        SESSION
+                      </span>
+
+                      <strong>
+                        Question Navigator
+                      </strong>
+
+                    </div>
+
+                    <BarChart3
+                      size={20}
+                    />
+
+                  </div>
+
+
+                  <div className="navigator-stats">
+
+                    <div>
+
+                      <strong>
+                        {
+                          sessionStats
+                            .answered
+                        }
+                      </strong>
+
+                      <span>
+                        Answered
+                      </span>
+
+                    </div>
+
+                    <div>
+
+                      <strong>
+                        {
+                          sessionStats
+                            .unanswered
+                        }
+                      </strong>
+
+                      <span>
+                        Remaining
+                      </span>
+
+                    </div>
+
+                  </div>
+
+
+                  <div className="question-number-grid">
+
+                    {
+                      sessionQuestions.map(
+                        (
+                          question,
+                          index
+                        ) => {
+
+                          const answered =
+                            Boolean(
+                              answers[
+                                question.id
+                              ]
+                            )
+
+                          const flagged =
+                            Boolean(
+                              flags[
+                                question.id
+                              ]
+                            )
+
+                          const submitted =
+                            Boolean(
+                              submittedQuestions[
+                                question.id
+                              ]
+                            )
+
+                          return (
+
+                            <button
+                              key={
+                                question.id
+                              }
+                              className={[
+                                'question-number',
+
+                                index ===
+                                currentIndex
+                                  ? 'current'
+                                  : '',
+
+                                answered
+                                  ? 'answered'
+                                  : '',
+
+                                flagged
+                                  ? 'flagged'
+                                  : '',
+
+                                submitted
+                                  ? 'submitted'
+                                  : ''
+                              ].join(' ')}
+                              onClick={() =>
+                                goToQuestion(
+                                  index
+                                )
+                              }
+                            >
+
+                              {index + 1}
+
+                              {
+                                flagged &&
+                                (
+                                  <i />
+                                )
+                              }
+
+                            </button>
+
+                          )
+                        }
+                      )
+                    }
+
+                  </div>
+
+
+                  <div className="navigator-legend">
+
+                    <span>
+                      <i className="legend-current" />
+                      Current
+                    </span>
+
+                    <span>
+                      <i className="legend-answered" />
+                      Answered
+                    </span>
+
+                    <span>
+                      <i className="legend-flagged" />
+                      Flagged
+                    </span>
+
+                  </div>
+
+
+                  <button
+                    className="finish-session-button"
+                    onClick={
+                      finishSession
+                    }
+                    disabled={
+                      saving
+                    }
+                  >
+
+                    Finish session
+
+                  </button>
+
+                </aside>
+
+
+              </div>
+
+            </div>
+
+          )
+        }
+
+
+        {/* =================================================
+            RESULT SCREEN
+        ================================================= */}
+
+        {
+          sessionStarted &&
+          sessionFinished &&
+          (
+
+            <section className="results-screen">
+
+
+              <div className="results-hero">
+
+                <div className="result-icon">
+
+                  {
+                    sessionStats
+                      .accuracy >= 70
+                      ? (
+                        <CheckCircle2
+                          size={36}
+                        />
+                      )
+                      : (
+                        <Target
+                          size={36}
+                        />
+                      )
+                  }
+
+                </div>
+
+
+                <div className="eyebrow">
+                  SESSION COMPLETE
+                </div>
+
+
+                <h1>
+                  {
+                    sessionStats
+                      .accuracy
+                  }%
+                </h1>
+
+
+                <h2>
+                  {
+                    sessionStats
+                      .accuracy >= 80
+                      ? 'Excellent session'
+                      : sessionStats
+                          .accuracy >= 60
+                        ? 'Good progress'
+                        : 'Keep building'
+                  }
+                </h2>
+
+
+                <p>
+                  You completed {
+                    sessionQuestions.length
+                  } questions in {
+                    formatTime(
+                      elapsedSeconds
+                    )
+                  }.
+                </p>
+
+              </div>
+
+
+              <div className="result-stat-grid">
+
+
+                <div className="result-stat">
+
+                  <span>
+                    SCORE
+                  </span>
+
+                  <strong>
+                    {
+                      sessionStats
+                        .correct
+                    } / {
+                      sessionQuestions
+                        .length
+                    }
+                  </strong>
+
+                </div>
+
+
+                <div className="result-stat correct">
+
+                  <span>
+                    CORRECT
+                  </span>
+
+                  <strong>
+                    {
+                      sessionStats
+                        .correct
+                    }
+                  </strong>
+
+                </div>
+
+
+                <div className="result-stat wrong">
+
+                  <span>
+                    INCORRECT
+                  </span>
+
+                  <strong>
+                    {
+                      sessionStats
+                        .incorrect
+                    }
+                  </strong>
+
+                </div>
+
+
+                <div className="result-stat">
+
+                  <span>
+                    UNANSWERED
+                  </span>
+
+                  <strong>
+                    {
+                      sessionStats
+                        .unanswered
+                    }
+                  </strong>
+
+                </div>
+
+
+                <div className="result-stat">
+
+                  <span>
+                    ACCURACY
+                  </span>
+
+                  <strong>
+                    {
+                      sessionStats
+                        .accuracy
+                    }%
+                  </strong>
+
+                </div>
+
+
+                <div className="result-stat">
+
+                  <span>
+                    TIME
+                  </span>
+
+                  <strong>
+                    {
+                      formatTime(
+                        elapsedSeconds
+                      )
+                    }
+                  </strong>
+
+                </div>
+
+
+              </div>
+
+
+              <section className="panel result-review-panel">
+
+                <div className="practice-section-title">
+
+                  <div>
+
+                    <div className="panel-kicker">
+                      QUESTION REVIEW
+                    </div>
+
+                    <h2>
+                      Review your session
+                    </h2>
+
+                  </div>
+
+                </div>
+
+
+                <div className="result-question-list">
+
+                  {
+                    sessionQuestions.map(
+                      (
+                        question,
+                        index
+                      ) => {
+
+                        const selected =
+                          answers[
+                            question.id
+                          ]
+
+                        const correct =
+                          selected &&
+                          selected ===
+                          question
+                            .correct_option
+                            ?.toUpperCase()
+
+                        return (
+
+                          <button
+                            key={
+                              question.id
+                            }
+                            className="result-question-row"
+                            onClick={() => {
+
+                              setSessionFinished(
+                                false
+                              )
+
+                              setPracticeMode(
+                                'tutor'
+                              )
+
+                              setSubmittedQuestions(
+                                (previous) => ({
+                                  ...previous,
+                                  [question.id]:
+                                    true
+                                })
+                              )
+
+                              setCurrentIndex(
+                                index
+                              )
+
+                            }}
+                          >
+
+                            <span className="result-question-number">
+                              {index + 1}
+                            </span>
+
+
+                            <div>
+
+                              <strong>
+
+                                {
+                                  question.stem
+                                    .length > 95
+                                    ? `${
+                                        question.stem.slice(
+                                          0,
+                                          95
+                                        )
+                                      }...`
+                                    : question.stem
+                                }
+
+                              </strong>
+
+                              <small>
+
+                                {
+                                  selected
+                                    ? `Your answer: ${selected}`
+                                    : 'Unanswered'
+                                }
+
+                              </small>
+
+                            </div>
+
+
+                            {
+                              !selected
+                                ? (
+                                  <AlertCircle
+                                    size={20}
+                                  />
+                                )
+                                : correct
+                                  ? (
+                                    <CheckCircle2
+                                      size={20}
+                                    />
+                                  )
+                                  : (
+                                    <XCircle
+                                      size={20}
+                                    />
+                                  )
+                            }
+
+                          </button>
+
+                        )
+                      }
+                    )
+                  }
+
+                </div>
+
+              </section>
+
+
+              <div className="results-actions">
+
+                <button
+                  className="btn btn-outline"
+                  onClick={() =>
+                    navigate(
+                      '/dashboard'
+                    )
+                  }
+                >
+
+                  <Home size={18} />
+
+                  Dashboard
+
+                </button>
+
+
+                <button
+                  className="btn btn-primary"
+                  onClick={
+                    newSession
+                  }
+                >
+
+                  <RotateCcw
+                    size={18}
+                  />
+
+                  New Practice Session
+
+                </button>
+
+              </div>
+
+
+            </section>
+
+          )
+        }
+
+
+      </main>
+
+    </div>
+  )
+}
