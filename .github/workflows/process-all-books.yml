@@ -1,79 +1,82 @@
-name: MedQ MCQ Turbo - Continuous Bank
+name: MedQ MCQ Bank - Direct Fast Continuous
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: '*/30 * * * *'
 
 concurrency:
-  group: medq-mcq-turbo
+  group: medq-direct-mcq-bank
   cancel-in-progress: false
 
 jobs:
-  books:
+  discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        book_id: [AUTO]
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install boto3 botocore supabase requests pymupdf
-      - name: Build dynamic book matrix
-        id: books
+      - name: Build book matrix
+        id: set-matrix
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: |
           python - <<'PY'
-          import os,json,requests
-          u=os.environ["SUPABASE_URL"].rstrip("/")
-          k=os.environ["SUPABASE_SECRET_KEY"]
-          r=requests.get(u+"/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc",
-                         headers={"apikey":k,"Authorization":"Bearer "+k},timeout=30)
+          import os, json, requests
+          u=os.environ['SUPABASE_URL'].rstrip('/')
+          k=os.environ['SUPABASE_SECRET_KEY']
+          headers={'apikey':k,'Authorization':'Bearer '+k}
+          r=requests.get(u+'/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc',headers=headers,timeout=30)
           r.raise_for_status()
-          books=[b for b in r.json() if b.get("file_key")]
-          # Each scheduled run processes every registered book once. The worker
-          # deduplicates existing stems, so reruns safely continue.
-          print("books:",len(books))
-          with open("/tmp/books.json","w") as f: json.dump(books,f)
+          books=[b for b in r.json() if b.get('id') and b.get('file_key')]
+          matrix={'include':[{
+              'book_id':str(b['id']),
+              'file_key':b['file_key'],
+              'subject':b.get('subject') or 'General',
+              'exam_track':b.get('exam_track') or 'FMGE_NEET_PG'
+          } for b in books]}
+          print('Books found:',len(books))
+          with open('/tmp/matrix.json','w') as f: json.dump(matrix,f)
+          print('matrix=',json.dumps(matrix))
           PY
-      - name: Process books sequentially inside this run
+          python - <<'PY'
+          import os
+          data=open('/tmp/matrix.json').read()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('matrix='+data+'\n')
+          PY
+
+  process:
+    needs: discover
+    if: ${{ needs.discover.outputs.matrix != '' && needs.discover.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3 botocore supabase requests pymupdf
+      - name: Direct MCQ extraction
         env:
+          BOOK_ID: ${{ matrix.book_id }}
+          FILE_KEY: ${{ matrix.file_key }}
+          BOOK_SUBJECT: ${{ matrix.subject }}
+          BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.5-flash
-        run: |
-          python - <<'PY'
-          import json,subprocess,os
-          books=json.load(open("/tmp/books.json"))
-          for b in books:
-              env=os.environ.copy()
-              env.update({
-                "BOOK_ID":str(b["id"]),
-                "FILE_KEY":b["file_key"],
-                "BOOK_SUBJECT":b.get("subject") or "General",
-                "BOOK_EXAM_TRACK":b.get("exam_track") or "FMGE_NEET_PG",
-                "MAX_MCQS_PER_RUN":"800",
-                "AI_BATCH_SIZE":"50",
-                "MAX_AI_PARALLEL":"5",
-                "MAX_PAGES":"0"
-              })
-              print("=== PROCESSING",b["id"],b.get("subject"),"===")
-              p=subprocess.run(["python","worker/process_book.py"],env=env)
-              if p.returncode != 0:
-                  print("Book failed; continuing to next book.")
-          PY
+          MAX_MCQS_PER_RUN: '2000'
+          SAVE_BATCH: '250'
+          MAX_PAGES: '0'
+        run: python worker/process_book.py
