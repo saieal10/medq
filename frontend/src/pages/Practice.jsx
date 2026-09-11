@@ -48,6 +48,105 @@ const QUESTION_COUNT_OPTIONS = [
   100
 ]
 
+const AMC_SUBJECTS = [
+  'Adult Health — Medicine',
+  'Adult Health — Surgery',
+  "Women's Health — Obstetrics & Gynaecology",
+  'Child Health — Paediatrics',
+  'Mental Health — Psychiatry',
+  'Population Health & Ethics'
+]
+
+const FMGE_SUBJECTS = [
+  'Anatomy',
+  'Physiology',
+  'Biochemistry',
+  'Pathology',
+  'Pharmacology',
+  'Microbiology',
+  'Forensic Medicine',
+  'Community Medicine (PSM)',
+  'Medicine',
+  'Surgery',
+  'Obstetrics & Gynaecology',
+  'Pediatrics',
+  'Orthopedics',
+  'ENT',
+  'Ophthalmology',
+  'Dermatology',
+  'Psychiatry',
+  'Radiology',
+  'Anaesthesiology'
+]
+
+function normalizeSubject(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[–—]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function questionMatchesExam(question, mode) {
+  if (mode === 'mixed') return true
+
+  const value = normalizeExamType(question?.exam_type)
+  const compact = value.replace(/[^A-Z]/g, '')
+
+  if (mode === 'amc') {
+    return compact === 'AMC' || compact === 'BOTH'
+  }
+
+  return (
+    compact === 'FMGE' ||
+    compact === 'FMGENEETPG' ||
+    compact === 'NEETPG' ||
+    compact === 'BOTH'
+  )
+}
+
+function questionMatchesSubject(question, selectedSubject, mode) {
+  if (selectedSubject === 'all') return true
+
+  const actual = normalizeSubject(question?.subject)
+  const selected = normalizeSubject(selectedSubject)
+
+  const amcMap = {
+    'adult health - medicine': ['medicine', 'adult health - medicine', 'adult health medicine'],
+    'adult health - surgery': ['surgery', 'adult health - surgery', 'adult health surgery'],
+    "women's health - obstetrics & gynaecology": [
+      'obstetrics & gynaecology', 'obstetrics and gynaecology',
+      'obstetrics & gynecology', 'obstetrics and gynecology',
+      'obgyn', "women's health - obstetrics & gynaecology"
+    ],
+    'child health - paediatrics': ['pediatrics', 'paediatrics', 'child health - paediatrics', 'child health pediatrics'],
+    'mental health - psychiatry': ['psychiatry', 'mental health - psychiatry', 'mental health psychiatry'],
+    'population health & ethics': ['population health & ethics', 'population health', 'public health', 'community medicine', 'community medicine (psm)']
+  }
+
+  if (Object.prototype.hasOwnProperty.call(amcMap, selected)) {
+    return amcMap[selected].includes(actual)
+  }
+
+  if (mode !== 'amc') {
+    if (selected === 'community medicine (psm)') {
+      return actual === 'community medicine (psm)' || actual === 'community medicine' || actual === 'psm'
+    }
+    if (selected === 'forensic medicine') {
+      return actual === 'forensic medicine' || actual === 'forensic medicine & toxicology' || actual === 'fmt'
+    }
+    if (selected === 'obstetrics & gynaecology') {
+      return actual === 'obstetrics & gynaecology' || actual === 'obstetrics and gynaecology' || actual === 'obgyn' || actual === 'ob-gyn'
+    }
+    if (selected === 'pediatrics') return actual === 'pediatrics' || actual === 'paediatrics'
+    if (selected === 'orthopedics') return actual === 'orthopedics' || actual === 'orthopaedics'
+    if (selected === 'anaesthesiology') return actual === 'anaesthesiology' || actual === 'anesthesiology' || actual === 'anaesthesia'
+    return actual === selected
+  }
+
+  return actual === selected
+}
+
 
 function formatTime(seconds) {
   const safeSeconds = Math.max(
@@ -521,52 +620,80 @@ export default function Practice({
   }
 
 
+  async function loadAllQuestions() {
+    const pageSize = 1000
+
+    const { count, error: countError } = await supabase
+      .from('questions')
+      .select('id', { count: 'exact', head: true })
+
+    if (!countError && Number.isFinite(count)) {
+      const total = Number(count) || 0
+      const rows = []
+
+      for (let start = 0; start < total; start += pageSize * 5) {
+        const jobs = []
+
+        for (let offset = start; offset < Math.min(total, start + pageSize * 5); offset += pageSize) {
+          jobs.push(
+            supabase
+              .from('questions')
+              .select('*')
+              .order('created_at', { ascending: false })
+              .range(offset, Math.min(offset + pageSize - 1, total - 1))
+          )
+        }
+
+        const responses = await Promise.all(jobs)
+        for (const response of responses) {
+          if (response.error) throw response.error
+          rows.push(...(response.data || []))
+        }
+      }
+
+      return rows
+    }
+
+    // Fallback for projects where exact COUNT is blocked by RLS.
+    const rows = []
+    for (let offset = 0; offset < 100000; offset += pageSize) {
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + pageSize - 1)
+
+      if (error) throw error
+      rows.push(...(data || []))
+      if (!data || data.length < pageSize) break
+    }
+    return rows
+  }
+
+
   async function loadPracticeData() {
     setLoading(true)
     setError('')
 
     try {
-      // Load the essential Practice data first so the page never waits
-      // for the much larger textbook chapter catalogue.
       const [
-        questionResponse,
+        allQuestions,
         bookResponse
       ] = await Promise.all([
-        supabase
-          .from('questions')
-          .select('*')
-          .order(
-            'created_at',
-            { ascending: false }
-          ),
-
+        loadAllQuestions(),
         supabase
           .from('books')
           .select('id,title,subject,status')
-          .order(
-            'created_at',
-            { ascending: false }
-          )
+          .order('created_at', { ascending: false })
       ])
 
-      if (questionResponse.error) {
-        throw questionResponse.error
-      }
-
-      setQuestions(
-        questionResponse.data || []
-      )
+      setQuestions(allQuestions)
 
       if (bookResponse.error) {
-        console.error(
-          'Books load error:',
-          bookResponse.error
-        )
+        console.error('Books load error:', bookResponse.error)
         setBooks([])
       } else {
-        setBooks(
-          bookResponse.data || []
-        )
+        setBooks(bookResponse.data || [])
       }
 
     } catch (loadError) {
@@ -670,17 +797,10 @@ export default function Practice({
   // =======================================================
 
   const subjects = useMemo(() => {
-    return [
-      ...new Set(
-        questions
-          .map(
-            (question) =>
-              question.subject
-          )
-          .filter(Boolean)
-      )
-    ].sort()
-  }, [questions])
+    if (examMode === 'amc') return AMC_SUBJECTS
+    if (examMode === 'fmge') return FMGE_SUBJECTS
+    return [...AMC_SUBJECTS, ...FMGE_SUBJECTS]
+  }, [examMode])
 
 
   const eligibleBooks = useMemo(() => {
@@ -708,28 +828,8 @@ export default function Practice({
           // EXAM TYPE
           // -----------------------------------------------
 
-          const questionExam =
-            normalizeExamType(
-              question.exam_type
-            )
-
-          let examMatches = true
-
-          if (examMode === 'amc') {
-            examMatches =
-              questionExam === 'AMC' ||
-              questionExam === 'BOTH'
-          }
-
-          if (examMode === 'fmge') {
-            examMatches =
-              questionExam === 'FMGE' ||
-              questionExam === 'BOTH'
-          }
-
-          if (examMode === 'mixed') {
-            examMatches = true
-          }
+          const examMatches =
+            questionMatchesExam(question, examMode)
 
 
           // -----------------------------------------------
@@ -737,8 +837,11 @@ export default function Practice({
           // -----------------------------------------------
 
           const subjectMatches =
-            subject === 'all' ||
-            question.subject === subject
+            questionMatchesSubject(
+              question,
+              subject,
+              examMode
+            )
 
 
           // -----------------------------------------------
@@ -949,6 +1052,16 @@ export default function Practice({
 
 
   useEffect(() => {
+    setSubject('all')
+    setBookId('all')
+    setChapter('all')
+    setTopic('all')
+  }, [
+    examMode
+  ])
+
+
+  useEffect(() => {
     setChapter('all')
     setTopic('all')
   }, [
@@ -989,20 +1102,18 @@ export default function Practice({
 
 
 
+  function questionCountForSubject(subjectName) {
+    return questions.filter((question) => (
+      questionMatchesExam(question, examMode) &&
+      questionMatchesSubject(question, subjectName, examMode)
+    )).length
+  }
+
   function questionCountForChapter(chapterName) {
     return questions.filter((question) => {
-      const examMatches =
-        examMode === 'mixed' ||
-        question.exam_type === examMode ||
-        question.exam_type === 'both'
-
-      const bookMatches =
-        bookId === 'all' ||
-        question.book_id === bookId
-
-      const subjectMatches =
-        subject === 'all' ||
-        question.subject === subject
+      const examMatches = questionMatchesExam(question, examMode)
+      const bookMatches = bookId === 'all' || question.book_id === bookId
+      const subjectMatches = questionMatchesSubject(question, subject, examMode)
 
       return (
         examMatches &&
@@ -1012,6 +1123,7 @@ export default function Practice({
       )
     }).length
   }
+
 
 
   async function generateQuestionsForChapter() {
@@ -2033,7 +2145,7 @@ export default function Practice({
                           key={item}
                           value={item}
                         >
-                          {item} ({questionCountForChapter(item)})
+                          {item} ({questionCountForSubject(item)})
                         </option>
 
                       )
