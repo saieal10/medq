@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       file_key:
-        description: "Cloudflare R2 file key"
+        description: "R2 file key"
         required: true
         type: string
       subject:
@@ -19,9 +19,8 @@ on:
         description: "Exam track"
         required: true
         type: choice
-        options:
-          - amc
-          - fmge_neetpg
+        options: [fmge_neetpg, amc]
+        default: fmge_neetpg
 
 concurrency:
   group: medq-single-book-${{ inputs.book_id }}
@@ -46,14 +45,15 @@ jobs:
       GEMINI_MODEL: gemini-3.5-flash
       QUESTIONS_PER_CHUNK: 8
       AI_PASSES_PER_CHUNK: 2
-      CHUNKS_PER_RUN: 20
+      CHUNKS_PER_RUN: 30
+      DAILY_FMGE_TARGET: 400
+      DAILY_AMC_TARGET: 200
       AI_RETRIES: 4
       AI_TIMEOUT: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: {python-version: "3.11"}
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -61,10 +61,6 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f worker/requirements.txt ]; then
-            python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
-          else
-            python -m pip install boto3 pillow pypdf pdfplumber pymupdf pytesseract requests python-dotenv supabase google-generativeai
-          fi
-      - name: Process and expand book
+          python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
+      - name: Process and expand permanent question bank
         run: python worker/process_book.py
