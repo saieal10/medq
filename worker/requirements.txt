@@ -1,10 +1,10 @@
-boto3
-pillow
+requests
+python-dotenv
 pypdf
 pdfplumber
 pymupdf
 pytesseract
-requests
-python-dotenv
-supabase
+pillow
 google-generativeai
+boto3
+supabase
