@@ -1507,6 +1507,109 @@ def list_books():
     }
 
 
+
+# ---------------------------------------------------------
+# Delete book (admin only)
+# ---------------------------------------------------------
+
+ADMIN_EMAILS = {
+    item.strip().lower()
+    for item in os.getenv(
+        "ADMIN_EMAILS",
+        "saiealnaik17@gmail.com"
+    ).split(",")
+    if item.strip()
+}
+
+def require_admin_user(authorization: Optional[str]):
+    user = require_authenticated_user(authorization)
+    email = (getattr(user, "email", None) or "").strip().lower()
+    if not email or email not in ADMIN_EMAILS:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the MedQ administrator can delete books."
+        )
+    return user
+
+
+@app.delete("/api/books/{book_id}")
+def delete_book(
+    book_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Permanently remove one shared book and its generated data."""
+    require_admin_user(authorization)
+    supabase = get_supabase()
+
+    try:
+        result = (
+            supabase.table("books")
+            .select("id,title,file_key")
+            .eq("id", book_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to load book: {exc}")
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Book not found.")
+
+    book = result.data[0]
+    file_key = book.get("file_key")
+
+    # Remove dependent records first so foreign-key relationships do not block
+    # deletion. Missing optional tables/columns are safely ignored.
+    question_ids = []
+    try:
+        qres = (
+            supabase.table("questions")
+            .select("id")
+            .eq("book_id", book_id)
+            .execute()
+        )
+        question_ids = [str(row.get("id")) for row in (qres.data or []) if row.get("id")]
+    except Exception:
+        question_ids = []
+
+    if question_ids:
+        for table in ("attempts", "bookmarks"):
+            for start in range(0, len(question_ids), 100):
+                batch = question_ids[start:start + 100]
+                try:
+                    supabase.table(table).delete().in_("question_id", batch).execute()
+                except Exception:
+                    pass
+
+    for table in ("questions", "book_chunks", "book_chapters", "book_processing_jobs"):
+        try:
+            supabase.table(table).delete().eq("book_id", book_id).execute()
+        except Exception:
+            pass
+
+    try:
+        supabase.table("books").delete().eq("id", book_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Book data could not be deleted: {exc}")
+
+    # R2 deletion is attempted last. If the object was already deleted manually,
+    # that is harmless and the database record is still cleaned up.
+    r2_deleted = False
+    if file_key and all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME]):
+        try:
+            get_r2_client().delete_object(Bucket=R2_BUCKET_NAME, Key=file_key)
+            r2_deleted = True
+        except Exception:
+            r2_deleted = False
+
+    return {
+        "ok": True,
+        "book_id": book_id,
+        "title": book.get("title"),
+        "r2_deleted": r2_deleted,
+        "message": "Book and its generated data were deleted from MedQ."
+    }
+
 # ---------------------------------------------------------
 # Start automatic processing
 # ---------------------------------------------------------
