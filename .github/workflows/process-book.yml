@@ -1,21 +1,28 @@
-name: MedQ Process Single Book - Turbo
+name: MedQ Process Single Book - Turbo Direct
 
 on:
   workflow_dispatch:
     inputs:
       book_id:
+        description: 'Supabase book ID'
         required: true
         type: string
       file_key:
+        description: 'R2 file key'
         required: true
         type: string
       subject:
+        description: 'Book subject'
         required: true
         type: string
       exam_track:
+        description: 'Exam track'
         required: true
         type: choice
-        options: [AMC, FMGE_NEET_PG, BOTH]
+        options:
+          - AMC
+          - FMGE_NEET_PG
+          - BOTH
 
 jobs:
   process:
@@ -25,12 +32,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install boto3 botocore supabase requests pymupdf
-      - name: Turbo MCQ extraction
+      - name: Direct MCQ extraction
         env:
           BOOK_ID: ${{ inputs.book_id }}
           FILE_KEY: ${{ inputs.file_key }}
@@ -42,9 +49,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.5-flash
-          MAX_MCQS_PER_RUN: "800"
-          AI_BATCH_SIZE: "50"
-          MAX_AI_PARALLEL: "5"
+          MAX_MCQS_PER_RUN: '2000'
+          SAVE_BATCH: '250'
+          MAX_PAGES: '0'
         run: python worker/process_book.py
