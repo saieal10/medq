@@ -1,4 +1,4 @@
-name: MedQ Background Question Bank - All Books
+name: MedQ MCQ Turbo - Continuous Bank
 
 on:
   workflow_dispatch:
@@ -6,76 +6,74 @@ on:
     - cron: "*/30 * * * *"
 
 concurrency:
-  group: medq-background-question-bank
+  group: medq-mcq-turbo
   cancel-in-progress: false
 
 jobs:
-  find-books:
+  books:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.books.outputs.matrix }}
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-    steps:
-      - id: books
-        shell: bash
-        run: |
-          python - <<'PY'
-          import os, json, urllib.request
-          url=os.environ["SUPABASE_URL"].rstrip("/")+"/rest/v1/books?select=id,file_key,subject,exam_track,status&file_key=not.is.null"
-          req=urllib.request.Request(url,headers={"apikey":os.environ["SUPABASE_SECRET_KEY"],"Authorization":"Bearer "+os.environ["SUPABASE_SECRET_KEY"]})
-          data=json.load(urllib.request.urlopen(req,timeout=30))
-          books=[]
-          for b in data:
-            track=(b.get("exam_track") or "fmge_neetpg").lower()
-            if track not in ("amc","fmge_neetpg"): track="fmge_neetpg"
-            if b.get("id") and b.get("file_key"):
-              books.append({"book_id":b["id"],"file_key":b["file_key"],"subject":b.get("subject") or "General","exam_track":track})
-          print("Found",len(books),"books")
-          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("matrix="+json.dumps({"include":books})+"\n")
-          PY
-
-  process-books:
-    needs: find-books
-    if: ${{ needs.find-books.outputs.matrix != '' && needs.find-books.outputs.matrix != '{"include":[]}' }}
+    timeout-minutes: 45
     strategy:
-      max-parallel: 4
       fail-fast: false
-      matrix: ${{ fromJson(needs.find-books.outputs.matrix) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    env:
-      BOOK_ID: ${{ matrix.book_id }}
-      FILE_KEY: ${{ matrix.file_key }}
-      BOOK_SUBJECT: ${{ matrix.subject }}
-      BOOK_EXAM_TRACK: ${{ matrix.exam_track }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: gemini-3.5-flash
-      QUESTIONS_PER_CHUNK: 8
-      AI_PASSES_PER_CHUNK: 2
-      CHUNKS_PER_RUN: 30
-      DAILY_FMGE_TARGET: 400
-      DAILY_AMC_TARGET: 200
-      AI_RETRIES: 4
-      AI_TIMEOUT: 150
+      max-parallel: 4
+      matrix:
+        book_id: [AUTO]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-eng
-      - name: Install Python dependencies
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install requests python-dotenv pypdf pdfplumber pymupdf pytesseract pillow google-generativeai boto3 supabase
-      - name: Process and expand permanent question bank
-        run: python worker/process_book.py
+          pip install boto3 botocore supabase requests pymupdf
+      - name: Build dynamic book matrix
+        id: books
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          python - <<'PY'
+          import os,json,requests
+          u=os.environ["SUPABASE_URL"].rstrip("/")
+          k=os.environ["SUPABASE_SECRET_KEY"]
+          r=requests.get(u+"/rest/v1/books?select=id,file_key,subject,exam_track&order=created_at.asc",
+                         headers={"apikey":k,"Authorization":"Bearer "+k},timeout=30)
+          r.raise_for_status()
+          books=[b for b in r.json() if b.get("file_key")]
+          # Each scheduled run processes every registered book once. The worker
+          # deduplicates existing stems, so reruns safely continue.
+          print("books:",len(books))
+          with open("/tmp/books.json","w") as f: json.dump(books,f)
+          PY
+      - name: Process books sequentially inside this run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3.5-flash
+        run: |
+          python - <<'PY'
+          import json,subprocess,os
+          books=json.load(open("/tmp/books.json"))
+          for b in books:
+              env=os.environ.copy()
+              env.update({
+                "BOOK_ID":str(b["id"]),
+                "FILE_KEY":b["file_key"],
+                "BOOK_SUBJECT":b.get("subject") or "General",
+                "BOOK_EXAM_TRACK":b.get("exam_track") or "FMGE_NEET_PG",
+                "MAX_MCQS_PER_RUN":"800",
+                "AI_BATCH_SIZE":"50",
+                "MAX_AI_PARALLEL":"5",
+                "MAX_PAGES":"0"
+              })
+              print("=== PROCESSING",b["id"],b.get("subject"),"===")
+              p=subprocess.run(["python","worker/process_book.py"],env=env)
+              if p.returncode != 0:
+                  print("Book failed; continuing to next book.")
+          PY
