@@ -1,14 +1,11 @@
 name: MedQ AMC 1000 Daily Generator
-
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 * * * *"
-
 concurrency:
   group: medq-amc-1000-daily
   cancel-in-progress: false
-
 jobs:
   generate:
     runs-on: ubuntu-latest
@@ -16,11 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: {python-version: "3.11"}
       - name: Install
         run: pip install supabase==2.18.1 httpx==0.28.1
-      - name: Generate AMC questions
+      - name: Generate
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
@@ -28,7 +24,6 @@ jobs:
           GEMINI_MODEL: gemini-3.5-flash
           AMC_DAILY_TARGET: "1000"
           AMC_REQUESTS_PER_RUN: "20"
-          AMC_QUESTIONS_PER_REQUEST: "20"
-          AMC_CHUNKS_PER_REQUEST: "6"
-          AMC_CONCURRENCY: "5"
+          AMC_QUESTIONS_PER_REQUEST: "50"
+          AMC_CONCURRENCY: "2"
         run: python worker/generate_amc.py
