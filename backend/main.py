@@ -999,6 +999,98 @@ def generate_questions_on_demand(
     }
 
 
+class QuickMCQRequest(BaseModel):
+    count: int = 10
+    subject: str = "Adult Health — Medicine"
+    difficulty: str = "Medium"
+    exam_type: str = "AMC"
+
+
+@app.post("/api/medbot/quick-mcq")
+def medbot_quick_mcq(
+    request: QuickMCQRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Generate short-lived AMC practice questions. Never writes to the bank."""
+    require_authenticated_user(authorization)
+
+    if request.exam_type.upper() != "AMC":
+        raise HTTPException(status_code=400, detail="AI Quick MCQ currently supports AMC only.")
+    count = max(1, min(int(request.count or 10), 20))
+    difficulty = request.difficulty if request.difficulty in {"Easy", "Medium", "Hard"} else "Medium"
+    subject = (request.subject or "Adult Health — Medicine").strip()
+
+    system_prompt = (
+        "You are a senior Australian Medical Council CAT MCQ author and medical "
+        "quality reviewer. Generate original educational AMC-style single-best-answer "
+        "questions. Do not copy or lightly paraphrase known questions. Use clinically "
+        "sound reasoning. Each question must have exactly five plausible options A-E, "
+        "one unambiguous best answer, and a concise explanation. Avoid all-of-the-above, "
+        "none-of-the-above, answer clues, double negatives, and fabricated guidelines. "
+        "Return ONLY valid JSON."
+    )
+    user_prompt = f"""Generate {count} original AMC CAT-style MCQs for:
+Domain: {subject}
+Difficulty: {difficulty}
+
+Prefer realistic clinical vignettes, diagnosis, investigation, management, safety,
+prioritisation and next-best-step reasoning. Do not claim these are official AMC questions.
+
+JSON:
+{{"questions":[
+  {{"question":"...", "options":["...","...","...","...","..."],
+    "answer":"A", "explanation":"...", "topic":"..."}}
+]}}"""
+
+    try:
+        answer, used_model = call_gemini_medbot([
+            {"role":"system","content":system_prompt},
+            {"role":"user","content":user_prompt},
+        ])
+        raw=answer.strip()
+        if raw.startswith("```"):
+            raw=re.sub(r"^```(?:json)?","",raw,flags=re.I)
+            raw=re.sub(r"```$","",raw).strip()
+        start=raw.find("{")
+        end=raw.rfind("}")
+        if start<0 or end<0:
+            raise ValueError("Gemini returned invalid JSON.")
+        data=json.loads(raw[start:end+1])
+        qs=data.get("questions",[]) if isinstance(data,dict) else []
+        valid=[]
+        seen=set()
+        for q in qs:
+            stem=str(q.get("question") or "").strip()
+            opts=q.get("options")
+            ans=str(q.get("answer") or "").strip().upper()
+            exp=str(q.get("explanation") or "").strip()
+            if len(stem)<60 or not isinstance(opts,list) or len(opts)!=5 or ans not in "ABCDE" or len(exp)<30:
+                continue
+            cleaned=[str(x).strip() for x in opts]
+            if len(set(x.lower() for x in cleaned))!=5:
+                continue
+            key=re.sub(r"[^a-z0-9 ]+","",stem.lower())
+            if key in seen: continue
+            seen.add(key)
+            valid.append({
+                "question":stem,
+                "options":cleaned,
+                "answer":ans,
+                "explanation":exp,
+                "topic":str(q.get("topic") or subject),
+                "difficulty":difficulty,
+                "exam_type":"AMC",
+            })
+            if len(valid)>=count: break
+        if not valid:
+            raise ValueError("No valid AMC questions were returned.")
+        return {"ok":True,"questions":valid,"model":used_model,"saved_to_bank":False}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI Quick MCQ generation failed: {exc}")
+
+
 @app.post("/api/medbot/stream")
 def medbot_stream(
     request: MedBotRequest,
