@@ -35,7 +35,6 @@ import {
 
 import { supabase } from '../lib/supabase'
 import Logo from '../components/Logo'
-import AIQuickMCQ from '../components/AIQuickMCQ'
 
 const API_URL =
   import.meta.env.VITE_API_URL ||
@@ -47,22 +46,6 @@ const QUESTION_COUNT_OPTIONS = [
   20,
   50,
   100
-]
-
-const AMC_SUBJECTS = [
-  'Adult Health — Medicine',
-  'Adult Health — Surgery',
-  "Women's Health — Obstetrics & Gynaecology",
-  'Child Health — Paediatrics',
-  'Mental Health — Psychiatry',
-  'Population Health & Ethics'
-]
-
-const FMGE_SUBJECTS = [
-  'Anatomy','Physiology','Biochemistry','Pathology','Pharmacology',
-  'Microbiology','Forensic Medicine','Community Medicine (PSM)','Medicine',
-  'Surgery','Obstetrics & Gynaecology','Pediatrics','Orthopedics','ENT',
-  'Ophthalmology','Dermatology','Psychiatry','Radiology','Anaesthesiology'
 ]
 
 
@@ -327,9 +310,6 @@ export default function Practice({
     setRequestedCount
   ] = useState(20)
 
-  const [practiceTab, setPracticeTab] = useState('bank')
-  const [searchText, setSearchText] = useState('')
-
 
   // =======================================================
   // SESSION STATE
@@ -543,31 +523,18 @@ export default function Practice({
     try {
       // Load the essential Practice data first so the page never waits
       // for the much larger textbook chapter catalogue.
-      const loadAllQuestions = async () => {
-        const pageSize = 1000
-        const pages = []
-        let offset = 0
-        while (true) {
-          const { data, error } = await supabase
-            .from('questions')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .range(offset, offset + pageSize - 1)
-          if (error) throw error
-          const batch = data || []
-          pages.push(...batch)
-          if (batch.length < pageSize) break
-          offset += pageSize
-          if (offset > 100000) break
-        }
-        return pages
-      }
-
       const [
-        allQuestions,
+        questionResponse,
         bookResponse
       ] = await Promise.all([
-        loadAllQuestions(),
+        supabase
+          .from('questions')
+          .select('*')
+          .order(
+            'created_at',
+            { ascending: false }
+          ),
+
         supabase
           .from('books')
           .select('id,title,subject,status')
@@ -577,7 +544,13 @@ export default function Practice({
           )
       ])
 
-      setQuestions(allQuestions)
+      if (questionResponse.error) {
+        throw questionResponse.error
+      }
+
+      setQuestions(
+        questionResponse.data || []
+      )
 
       if (bookResponse.error) {
         console.error(
@@ -1100,25 +1073,12 @@ export default function Practice({
   }
 
 
-  const searchFilteredQuestions = useMemo(() => {
-    const q = searchText.trim().toLowerCase()
-    if (!q) return finalFilteredQuestions
-    return finalFilteredQuestions.filter((item) => {
-      const haystack = [
-        item.question, item.stem, item.subject, item.chapter,
-        item.topic, item.explanation,
-        ...(Array.isArray(item.options) ? item.options : [])
-      ].join(' ').toLowerCase()
-      return haystack.includes(q)
-    })
-  }, [finalFilteredQuestions, searchText])
-
   // =======================================================
   // START SESSION
   // =======================================================
 
   async function startPractice() {
-    if (searchFilteredQuestions.length === 0) {
+    if (finalFilteredQuestions.length === 0) {
       return
     }
 
@@ -1126,7 +1086,7 @@ export default function Practice({
     setError('')
 
     try {
-      const shuffled = shuffleArray(searchFilteredQuestions)
+      const shuffled = shuffleArray(finalFilteredQuestions)
       const count = Math.min(requestedCount, shuffled.length)
       const selectedQuestions = shuffled.slice(0, count)
 
@@ -1777,27 +1737,6 @@ export default function Practice({
 
             </header>
 
-            <div className="mb-5 flex flex-wrap gap-2 border-b pb-3">
-              <button
-                type="button"
-                onClick={() => setPracticeTab('bank')}
-                className={practiceTab === 'bank' ? 'px-4 py-2 rounded-xl font-semibold border' : 'px-4 py-2 rounded-xl border opacity-70'}
-              >
-                Question Bank
-              </button>
-              <button
-                type="button"
-                onClick={() => setPracticeTab('quick')}
-                className={practiceTab === 'quick' ? 'px-4 py-2 rounded-xl font-semibold border' : 'px-4 py-2 rounded-xl border opacity-70'}
-              >
-                ✨ AI Quick MCQ
-              </button>
-            </div>
-
-            {practiceTab === 'quick' ? (
-              <AIQuickMCQ />
-            ) : (
-            <>
 
             {error && (
 
@@ -1923,20 +1862,6 @@ export default function Practice({
 
             </section>
 
-
-            <section className="panel mb-4">
-              <div className="practice-field">
-                <label>Search the question bank</label>
-                <input
-                  type="search"
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="Search topic, diagnosis, drug, question, chapter or explanation…"
-                  className="w-full"
-                />
-                <small>{searchText ? `${searchFilteredQuestions.length} matching questions` : `${finalFilteredQuestions.length} questions available`}</small>
-              </div>
-            </section>
 
             <section className="panel practice-setup-panel">
 
