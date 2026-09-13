@@ -88,10 +88,26 @@ async def call(client,p):
     url=f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
     payload={"contents":[{"parts":[{"text":p}]}],
              "generationConfig":{"temperature":0.35,"responseMimeType":"application/json","maxOutputTokens":30000}}
-    r=await client.post(url,headers={"x-goog-api-key":GEMINI_KEY},json=payload,timeout=240)
-    if r.status_code in (429,403): raise RuntimeError("QUOTA")
-    r.raise_for_status()
-    return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    last=""
+    for attempt in range(1,6):
+        try:
+            r=await client.post(url,headers={"x-goog-api-key":GEMINI_KEY},json=payload,timeout=300)
+            if r.status_code in (429,403): raise RuntimeError("QUOTA")
+            if r.status_code in (500,502,503,504):
+                last=f"HTTP {r.status_code}"
+                if attempt<5:
+                    await asyncio.sleep(min(30,2**attempt))
+                    continue
+                raise RuntimeError(f"GEMINI_TRANSIENT: {last}")
+            r.raise_for_status()
+            return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+        except httpx.HTTPError as exc:
+            last=str(exc)
+            if attempt<5:
+                await asyncio.sleep(min(30,2**attempt))
+                continue
+            raise RuntimeError(f"GEMINI_NETWORK: {last}")
+    raise RuntimeError(f"GEMINI_TRANSIENT: {last}")
 
 def valid(q):
     stem=(q.get("question") or "").strip()
