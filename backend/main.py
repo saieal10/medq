@@ -189,6 +189,17 @@ class MedBotRequest(BaseModel):
     conversation: Optional[List[MedBotMessage]] = None
 
 
+class PracticeQuestionsRequest(BaseModel):
+    exam_mode: str = "mixed"
+    subject: Optional[str] = None
+    book_id: Optional[str] = None
+    chapter: Optional[str] = None
+    topic: Optional[str] = None
+    difficulty: Optional[str] = None
+    search: Optional[str] = None
+    count: int = 20
+
+
 class GenerateQuestionsRequest(BaseModel):
     book_id: Optional[str] = None
     chapter: str = "__AUTO__"
@@ -529,7 +540,7 @@ def call_gemini_medbot(messages: List[Dict[str, str]]):
     # Account/project access can differ by Gemini model. Try the configured
     # model first, then stable fallbacks instead of exposing a useless 404.
     models = []
-    for model in [GEMINI_MODEL, "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]:
+    for model in [MEDBOT_MODEL, GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]:
         if model and model not in models:
             models.append(model)
 
@@ -634,9 +645,10 @@ def stream_gemini_medbot(messages: List[Dict[str, str]]):
     # Configured model first, then lightweight fallbacks already used by MedQ.
     models = []
     for model in [
+        MEDBOT_MODEL,
         GEMINI_MODEL,
-        "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
         "gemini-2.5-flash",
     ]:
         if model and model not in models:
@@ -997,6 +1009,32 @@ def generate_questions_on_demand(
             "Background book processing continues separately."
         ),
     }
+
+
+@app.post("/api/practice/questions")
+def practice_questions(request: PracticeQuestionsRequest, authorization: Optional[str] = Header(default=None)):
+    """Fast server-side Practice retrieval; never downloads the whole bank."""
+    require_authenticated_user(authorization)
+    if request.exam_mode not in {"amc", "fmge", "mixed"}:
+        raise HTTPException(status_code=400, detail="Invalid exam mode")
+    count=max(1,min(int(request.count or 20),100))
+    db=get_supabase()
+    q=db.table("questions").select(
+        "id,book_id,exam_type,question_type,stem,option_a,option_b,option_c,option_d,option_e,correct_option,explanation,subject,chapter,topic,difficulty,source_page",
+        count="exact"
+    )
+    if request.exam_mode == "amc":
+        q=q.in_("exam_type",["AMC","BOTH","amc","both"])
+    elif request.exam_mode == "fmge":
+        q=q.in_("exam_type",["FMGE","FMGE_NEETPG","NEETPG","BOTH","fmge","fmge_neetpg","neetpg","both"])
+    for field in ("subject","book_id","chapter","topic","difficulty"):
+        value=getattr(request,field)
+        if value and value!="all": q=q.eq(field,value)
+    if request.search and request.search.strip():
+        term=request.search.strip()[:100].replace("%"," ").replace("_"," ")
+        q=q.or_(f"stem.ilike.%{term}%,topic.ilike.%{term}%,chapter.ilike.%{term}%,explanation.ilike.%{term}%,option_a.ilike.%{term}%,option_b.ilike.%{term}%,option_c.ilike.%{term}%,option_d.ilike.%{term}%,option_e.ilike.%{term}%")
+    result=q.order("created_at",ascending=False).limit(count).execute()
+    return {"ok":True,"questions":result.data or [],"available":int(result.count or 0)}
 
 
 @app.post("/api/medbot/stream")
