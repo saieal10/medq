@@ -48,105 +48,6 @@ const QUESTION_COUNT_OPTIONS = [
   100
 ]
 
-const AMC_SUBJECTS = [
-  'Adult Health — Medicine',
-  'Adult Health — Surgery',
-  "Women's Health — Obstetrics & Gynaecology",
-  'Child Health — Paediatrics',
-  'Mental Health — Psychiatry',
-  'Population Health & Ethics'
-]
-
-const FMGE_SUBJECTS = [
-  'Anatomy',
-  'Physiology',
-  'Biochemistry',
-  'Pathology',
-  'Pharmacology',
-  'Microbiology',
-  'Forensic Medicine',
-  'Community Medicine (PSM)',
-  'Medicine',
-  'Surgery',
-  'Obstetrics & Gynaecology',
-  'Pediatrics',
-  'Orthopedics',
-  'ENT',
-  'Ophthalmology',
-  'Dermatology',
-  'Psychiatry',
-  'Radiology',
-  'Anaesthesiology'
-]
-
-function normalizeSubject(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[–—]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function questionMatchesExam(question, mode) {
-  if (mode === 'mixed') return true
-
-  const value = normalizeExamType(question?.exam_type)
-  const compact = value.replace(/[^A-Z]/g, '')
-
-  if (mode === 'amc') {
-    return compact === 'AMC' || compact === 'BOTH'
-  }
-
-  return (
-    compact === 'FMGE' ||
-    compact === 'FMGENEETPG' ||
-    compact === 'NEETPG' ||
-    compact === 'BOTH'
-  )
-}
-
-function questionMatchesSubject(question, selectedSubject, mode) {
-  if (selectedSubject === 'all') return true
-
-  const actual = normalizeSubject(question?.subject)
-  const selected = normalizeSubject(selectedSubject)
-
-  const amcMap = {
-    'adult health - medicine': ['medicine', 'adult health - medicine', 'adult health medicine'],
-    'adult health - surgery': ['surgery', 'adult health - surgery', 'adult health surgery'],
-    "women's health - obstetrics & gynaecology": [
-      'obstetrics & gynaecology', 'obstetrics and gynaecology',
-      'obstetrics & gynecology', 'obstetrics and gynecology',
-      'obgyn', "women's health - obstetrics & gynaecology"
-    ],
-    'child health - paediatrics': ['pediatrics', 'paediatrics', 'child health - paediatrics', 'child health pediatrics'],
-    'mental health - psychiatry': ['psychiatry', 'mental health - psychiatry', 'mental health psychiatry'],
-    'population health & ethics': ['population health & ethics', 'population health', 'public health', 'community medicine', 'community medicine (psm)']
-  }
-
-  if (Object.prototype.hasOwnProperty.call(amcMap, selected)) {
-    return amcMap[selected].includes(actual)
-  }
-
-  if (mode !== 'amc') {
-    if (selected === 'community medicine (psm)') {
-      return actual === 'community medicine (psm)' || actual === 'community medicine' || actual === 'psm'
-    }
-    if (selected === 'forensic medicine') {
-      return actual === 'forensic medicine' || actual === 'forensic medicine & toxicology' || actual === 'fmt'
-    }
-    if (selected === 'obstetrics & gynaecology') {
-      return actual === 'obstetrics & gynaecology' || actual === 'obstetrics and gynaecology' || actual === 'obgyn' || actual === 'ob-gyn'
-    }
-    if (selected === 'pediatrics') return actual === 'pediatrics' || actual === 'paediatrics'
-    if (selected === 'orthopedics') return actual === 'orthopedics' || actual === 'orthopaedics'
-    if (selected === 'anaesthesiology') return actual === 'anaesthesiology' || actual === 'anesthesiology' || actual === 'anaesthesia'
-    return actual === selected
-  }
-
-  return actual === selected
-}
-
 
 function formatTime(seconds) {
   const safeSeconds = Math.max(
@@ -400,11 +301,6 @@ export default function Practice({
   ] = useState('all')
 
   const [
-    searchQuery,
-    setSearchQuery
-  ] = useState('')
-
-  const [
     practiceMode,
     setPracticeMode
   ] = useState('tutor')
@@ -413,6 +309,9 @@ export default function Practice({
     requestedCount,
     setRequestedCount
   ] = useState(20)
+
+  const [searchText, setSearchText] = useState('')
+  const [availableCount, setAvailableCount] = useState(0)
 
 
   // =======================================================
@@ -620,103 +519,35 @@ export default function Practice({
   }
 
 
-  async function loadAllQuestions() {
-    const pageSize = 1000
-
-    const { count, error: countError } = await supabase
-      .from('questions')
-      .select('id', { count: 'exact', head: true })
-
-    if (!countError && Number.isFinite(count)) {
-      const total = Number(count) || 0
-      const rows = []
-
-      for (let start = 0; start < total; start += pageSize * 5) {
-        const jobs = []
-
-        for (let offset = start; offset < Math.min(total, start + pageSize * 5); offset += pageSize) {
-          jobs.push(
-            supabase
-              .from('questions')
-              .select('*')
-              .order('created_at', { ascending: false })
-              .range(offset, Math.min(offset + pageSize - 1, total - 1))
-          )
-        }
-
-        const responses = await Promise.all(jobs)
-        for (const response of responses) {
-          if (response.error) throw response.error
-          rows.push(...(response.data || []))
-        }
-      }
-
-      return rows
-    }
-
-    // Fallback for projects where exact COUNT is blocked by RLS.
-    const rows = []
-    for (let offset = 0; offset < 100000; offset += pageSize) {
-      const { data, error } = await supabase
-        .from('questions')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .range(offset, offset + pageSize - 1)
-
-      if (error) throw error
-      rows.push(...(data || []))
-      if (!data || data.length < pageSize) break
-    }
-    return rows
-  }
-
-
   async function loadPracticeData() {
     setLoading(true)
     setError('')
-
     try {
-      const [
-        allQuestions,
-        bookResponse
-      ] = await Promise.all([
-        loadAllQuestions(),
-        supabase
-          .from('books')
-          .select('id,title,subject,status')
-          .order('created_at', { ascending: false })
-      ])
-
-      setQuestions(allQuestions)
-
-      if (bookResponse.error) {
-        console.error('Books load error:', bookResponse.error)
-        setBooks([])
-      } else {
-        setBooks(bookResponse.data || [])
-      }
-
+      const { data: bookData, error: bookError } = await supabase.from('books').select('id,title,subject,status').order('created_at',{ascending:false})
+      if (bookError) throw bookError
+      setBooks(bookData || [])
+      // Only a tiny preview is loaded. The full question bank stays server-side.
+      const { data: preview } = await supabase.from('questions').select('*').order('created_at',{ascending:false}).limit(100)
+      setQuestions(preview || [])
+      await refreshFilteredCount()
     } catch (loadError) {
-      console.error(
-        'Practice load error:',
-        loadError
-      )
-
-      setQuestions([])
-      setError(
-        loadError?.message ||
-        'Could not load the Practice question bank.'
-      )
-
-    } finally {
-      // Never leave the whole Practice page stuck behind a spinner.
-      setLoading(false)
-    }
-
-    // Chapter catalogue is secondary. Load it after Practice is usable.
+      console.error('Practice load error:',loadError)
+      setQuestions([]); setBooks([])
+      setError(loadError?.message || 'Could not load Practice.')
+    } finally { setLoading(false) }
     loadChapterCatalogue()
   }
 
+  async function refreshFilteredCount() {
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      if (!currentSession?.access_token) return
+      const response=await fetch(`${API_URL}/api/practice/questions`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${currentSession.access_token}`},body:JSON.stringify({exam_mode:examMode,subject,book_id:bookId,chapter,topic,difficulty,search:searchText,count:1})})
+      if (!response.ok) return
+      const data=await response.json()
+      setAvailableCount(Number(data.available||0))
+    } catch (e) { console.error('Practice count refresh:',e) }
+  }
 
   async function loadChapterCatalogue() {
     try {
@@ -796,12 +627,15 @@ export default function Practice({
   // AVAILABLE FILTER VALUES
   // =======================================================
 
-  const subjects = useMemo(() => {
-    if (examMode === 'amc') return AMC_SUBJECTS
-    if (examMode === 'fmge') return FMGE_SUBJECTS
-    return [...AMC_SUBJECTS, ...FMGE_SUBJECTS]
-  }, [examMode])
-
+  const AMC_SUBJECTS = [
+    'Adult Health — Medicine','Adult Health — Surgery','Women's Health — Obstetrics & Gynaecology',
+    'Child Health — Paediatrics','Mental Health — Psychiatry','Population Health & Ethics'
+  ]
+  const FMGE_SUBJECTS = [
+    'Anatomy','Physiology','Biochemistry','Pathology','Pharmacology','Microbiology','Forensic Medicine','Community Medicine (PSM)',
+    'Medicine','Surgery','Obstetrics & Gynaecology','Pediatrics','Orthopedics','ENT','Ophthalmology','Dermatology','Psychiatry','Radiology','Anaesthesiology'
+  ]
+  const subjects = useMemo(() => examMode==='amc' ? AMC_SUBJECTS : examMode==='fmge' ? FMGE_SUBJECTS : [...new Set([...AMC_SUBJECTS,...FMGE_SUBJECTS])], [examMode])
 
   const eligibleBooks = useMemo(() => {
     if (subject === 'all') {
@@ -828,8 +662,28 @@ export default function Practice({
           // EXAM TYPE
           // -----------------------------------------------
 
-          const examMatches =
-            questionMatchesExam(question, examMode)
+          const questionExam =
+            normalizeExamType(
+              question.exam_type
+            )
+
+          let examMatches = true
+
+          if (examMode === 'amc') {
+            examMatches =
+              questionExam === 'AMC' ||
+              questionExam === 'BOTH'
+          }
+
+          if (examMode === 'fmge') {
+            examMatches =
+              questionExam === 'FMGE' ||
+              questionExam === 'BOTH'
+          }
+
+          if (examMode === 'mixed') {
+            examMatches = true
+          }
 
 
           // -----------------------------------------------
@@ -837,11 +691,8 @@ export default function Practice({
           // -----------------------------------------------
 
           const subjectMatches =
-            questionMatchesSubject(
-              question,
-              subject,
-              examMode
-            )
+            subject === 'all' ||
+            question.subject === subject
 
 
           // -----------------------------------------------
@@ -985,7 +836,7 @@ export default function Practice({
   ])
 
 
-  const topicFilteredQuestions =
+  const finalFilteredQuestions =
     useMemo(() => {
 
       if (topic === 'all') {
@@ -1003,41 +854,6 @@ export default function Practice({
     ])
 
 
-  const finalFilteredQuestions =
-    useMemo(() => {
-      const query = searchQuery.trim().toLowerCase()
-
-      if (!query) {
-        return topicFilteredQuestions
-      }
-
-      return topicFilteredQuestions.filter((question) => {
-        const searchableText = [
-          question.title,
-          question.question,
-          question.stem,
-          question.subject,
-          question.chapter,
-          question.topic,
-          question.explanation,
-          question.option_a,
-          question.option_b,
-          question.option_c,
-          question.option_d,
-          question.option_e
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-
-        return searchableText.includes(query)
-      })
-    }, [
-      topicFilteredQuestions,
-      searchQuery
-    ])
-
-
   // =======================================================
   // RESET DEPENDENT FILTERS
   // =======================================================
@@ -1048,16 +864,6 @@ export default function Practice({
     setTopic('all')
   }, [
     subject
-  ])
-
-
-  useEffect(() => {
-    setSubject('all')
-    setBookId('all')
-    setChapter('all')
-    setTopic('all')
-  }, [
-    examMode
   ])
 
 
@@ -1102,18 +908,20 @@ export default function Practice({
 
 
 
-  function questionCountForSubject(subjectName) {
-    return questions.filter((question) => (
-      questionMatchesExam(question, examMode) &&
-      questionMatchesSubject(question, subjectName, examMode)
-    )).length
-  }
-
   function questionCountForChapter(chapterName) {
     return questions.filter((question) => {
-      const examMatches = questionMatchesExam(question, examMode)
-      const bookMatches = bookId === 'all' || question.book_id === bookId
-      const subjectMatches = questionMatchesSubject(question, subject, examMode)
+      const examMatches =
+        examMode === 'mixed' ||
+        question.exam_type === examMode ||
+        question.exam_type === 'both'
+
+      const bookMatches =
+        bookId === 'all' ||
+        question.book_id === bookId
+
+      const subjectMatches =
+        subject === 'all' ||
+        question.subject === subject
 
       return (
         examMatches &&
@@ -1123,7 +931,6 @@ export default function Practice({
       )
     }).length
   }
-
 
 
   async function generateQuestionsForChapter() {
@@ -1230,62 +1037,21 @@ export default function Practice({
   // =======================================================
 
   async function startPractice() {
-    if (finalFilteredQuestions.length === 0) {
-      return
-    }
-
-    setSaving(true)
-    setError('')
-
+    if (availableCount <= 0) return
+    setSaving(true); setError('')
     try {
-      const shuffled = shuffleArray(finalFilteredQuestions)
-      const count = Math.min(requestedCount, shuffled.length)
-      const selectedQuestions = shuffled.slice(0, count)
-
-      const {
-        data: createdSession,
-        error: sessionError
-      } = await supabase
-        .from('practice_sessions')
-        .insert({
-          user_id: session.user.id,
-          exam_mode: examMode,
-          practice_mode: practiceMode,
-          subject: subject === 'all' ? null : subject,
-          book_id: bookId === 'all' ? null : bookId,
-          chapter: chapter === 'all' ? null : chapter,
-          topic: topic === 'all' ? null : topic,
-          difficulty: difficulty === 'all' ? null : difficulty,
-          requested_count: requestedCount,
-          question_count: selectedQuestions.length
-        })
-        .select('id')
-        .single()
-
-      if (sessionError) {
-        throw sessionError
-      }
-
-      setPracticeSessionId(createdSession.id)
-      setSessionQuestions(selectedQuestions)
-      setCurrentIndex(0)
-      setAnswers({})
-      setSubmittedQuestions({})
-      setSavedAttempts({})
-      setFlags({})
-      setElapsedSeconds(0)
-      setSessionFinished(false)
-      setSessionStarted(true)
-
-    } catch (startError) {
-      console.error(startError)
-      setError(
-        startError.message ||
-        'Could not start the practice session.'
-      )
-    } finally {
-      setSaving(false)
-    }
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      if (!currentSession?.access_token) throw new Error('Your login session has expired. Please sign in again.')
+      const response=await fetch(`${API_URL}/api/practice/questions`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${currentSession.access_token}`},body:JSON.stringify({exam_mode:examMode,subject,book_id:bookId,chapter,topic,difficulty,search:searchText,count:requestedCount})})
+      const payload=await response.json().catch(()=>({}))
+      if (!response.ok) throw new Error(payload.detail||'Could not load practice questions.')
+      const selectedQuestions=shuffleArray(payload.questions||[]).slice(0,requestedCount)
+      if (!selectedQuestions.length) throw new Error('No questions match the selected filters.')
+      const { data: createdSession, error: sessionError } = await supabase.from('practice_sessions').insert({user_id:session.user.id,exam_mode:examMode,practice_mode:practiceMode,subject:subject==='all'?null:subject,book_id:bookId==='all'?null:bookId,chapter:chapter==='all'?null:chapter,topic:topic==='all'?null:topic,difficulty:difficulty==='all'?null:difficulty,requested_count:requestedCount,question_count:selectedQuestions.length}).select('id').single()
+      if (sessionError) throw sessionError
+      setAvailableCount(Number(payload.available||selectedQuestions.length))
+      setPracticeSessionId(createdSession.id); setSessionQuestions(selectedQuestions); setCurrentIndex(0); setAnswers({}); setSubmittedQuestions({}); setSavedAttempts({}); setFlags({}); setElapsedSeconds(0); setSessionFinished(false); setSessionStarted(true)
+    } catch (startError) { console.error(startError); setError(startError.message||'Could not start the practice session.') } finally { setSaving(false) }
   }
 
 
@@ -2036,84 +1802,10 @@ export default function Practice({
               </div>
 
 
-              <div
-                className="practice-search-row"
-                style={{
-                  marginBottom: '18px',
-                  position: 'relative'
-                }}
-              >
-                <label
-                  htmlFor="practice-search"
-                  style={{
-                    display: 'block',
-                    marginBottom: '8px',
-                    fontWeight: 700
-                  }}
-                >
-                  Search your question bank
-                </label>
-
-                <div
-                  style={{
-                    position: 'relative',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}
-                >
-                  <input
-                    id="practice-search"
-                    type="search"
-                    value={searchQuery}
-                    onChange={(event) =>
-                      setSearchQuery(event.target.value)
-                    }
-                    placeholder="Search topic, diagnosis, drug, chapter, question or keyword…"
-                    style={{
-                      width: '100%',
-                      minHeight: '48px',
-                      padding: '0 82px 0 16px',
-                      borderRadius: '12px',
-                      border: '1px solid var(--border, #d9dee8)',
-                      outline: 'none',
-                      fontSize: '15px',
-                      background: 'var(--card, #fff)'
-                    }}
-                  />
-
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchQuery('')}
-                      aria-label="Clear search"
-                      style={{
-                        position: 'absolute',
-                        right: '10px',
-                        border: 0,
-                        background: 'transparent',
-                        cursor: 'pointer',
-                        padding: '8px',
-                        color: 'inherit'
-                      }}
-                    >
-                      <X size={18} />
-                    </button>
-                  )}
-                </div>
-
-                <div
-                  style={{
-                    marginTop: '7px',
-                    fontSize: '13px',
-                    color: 'var(--muted, #667085)'
-                  }}
-                >
-                  {searchQuery.trim()
-                    ? `${finalFilteredQuestions.length} matching question${finalFilteredQuestions.length === 1 ? '' : 's'}`
-                    : `${baseFilteredQuestions.length} questions available with these filters`}
-                </div>
+              <div className="practice-search" style={{marginBottom:'14px'}}>
+                <label>Search the full question bank</label>
+                <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} placeholder="Search diagnosis, drug, topic, question, option or explanation…" type="search" />
               </div>
-
 
               <div className="practice-filter-grid">
 
@@ -2145,7 +1837,7 @@ export default function Practice({
                           key={item}
                           value={item}
                         >
-                          {item} ({questionCountForSubject(item)})
+                          {item} ({questionCountForChapter(item)})
                         </option>
 
                       )
