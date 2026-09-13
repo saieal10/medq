@@ -74,7 +74,9 @@ GITHUB_BRANCH = os.getenv(
 
 # Gemini / MedBot
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash"
+MEDBOT_MODEL = os.getenv("MEDBOT_MODEL") or "gemini-3.5-flash-lite"
+AI_STUDY_MODEL = os.getenv("AI_STUDY_MODEL") or MEDBOT_MODEL
 
 # MedBot performance controls. These defaults keep the free-tier request
 # small and responsive while preserving textbook grounding.
@@ -187,6 +189,24 @@ class MedBotRequest(BaseModel):
     book_id: Optional[str] = None
     question_id: Optional[str] = None
     conversation: Optional[List[MedBotMessage]] = None
+
+
+class AIStudyRequest(BaseModel):
+    prompt: str
+    exam_mode: str = "amc"
+    difficulty: str = "mixed"
+    source_mode: str = "ai"
+    book_id: Optional[str] = None
+    use_library: bool = False
+    conversation: Optional[List[MedBotMessage]] = None
+
+
+class TutorExplainRequest(BaseModel):
+    stem: str
+    options: Dict[str, str]
+    selected_option: Optional[str] = None
+    correct_option: str
+    explanation: Optional[str] = None
 
 
 class PracticeQuestionsRequest(BaseModel):
@@ -1035,6 +1055,185 @@ def practice_questions(request: PracticeQuestionsRequest, authorization: Optiona
         q=q.or_(f"stem.ilike.%{term}%,topic.ilike.%{term}%,chapter.ilike.%{term}%,explanation.ilike.%{term}%,option_a.ilike.%{term}%,option_b.ilike.%{term}%,option_c.ilike.%{term}%,option_d.ilike.%{term}%,option_e.ilike.%{term}%")
     result=q.order("created_at",ascending=False).limit(count).execute()
     return {"ok":True,"questions":result.data or [],"available":int(result.count or 0)}
+
+
+
+def _parse_gemini_json(raw_text: str) -> Dict[str, Any]:
+    text = (raw_text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    raise ValueError("Gemini returned invalid structured JSON.")
+
+
+def call_gemini_json(system_prompt: str, user_prompt: str, schema: Dict[str, Any], timeout: int = 40) -> Dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured on the backend.")
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "generationConfig": {
+            "temperature": 0.35,
+            "maxOutputTokens": 1400,
+            "responseMimeType": "application/json",
+            "responseSchema": schema,
+        },
+    }
+    models = []
+    for model in [AI_STUDY_MODEL, MEDBOT_MODEL, GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]:
+        if model and model not in models:
+            models.append(model)
+    last = ""
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json", "User-Agent": "MedQ-AI-Study"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            raw = "\n".join(part.get("text", "") for part in parts if part.get("text"))
+            return _parse_gemini_json(raw)
+        except urllib.error.HTTPError as exc:
+            try:
+                last = exc.read().decode("utf-8")
+            except Exception:
+                last = str(exc)
+            print(f"AI Study Gemini {model} error: {last}")
+            if exc.code == 429:
+                continue
+            if exc.code in (400, 403, 404):
+                continue
+            if exc.code in (500, 502, 503, 504):
+                time.sleep(0.8)
+                continue
+        except Exception as exc:
+            last = str(exc)
+            print(f"AI Study Gemini {model} connection/parse error: {last}")
+            continue
+    raise HTTPException(status_code=502, detail="Gemini could not generate the requested study item right now. Please try again.")
+
+
+@app.post("/api/ai-study/generate")
+def ai_study_generate(request: AIStudyRequest, authorization: Optional[str] = Header(default=None)):
+    """Generate exactly one spontaneous MCQ so the student can quiz themselves conversationally."""
+    require_authenticated_user(authorization)
+    prompt = (request.prompt or "").strip()
+    if len(prompt) < 2:
+        raise HTTPException(status_code=400, detail="Tell MedQ what topic you want to be tested on.")
+    if len(prompt) > 1200:
+        raise HTTPException(status_code=400, detail="Please keep the topic/request under 1200 characters.")
+    mode = (request.exam_mode or "amc").lower()
+    if mode not in {"amc", "fmge", "mixed"}:
+        mode = "amc"
+    difficulty = (request.difficulty or "mixed").lower()
+    if difficulty not in {"easy", "medium", "hard", "mixed"}:
+        difficulty = "mixed"
+
+    # Fast path: use an existing bank question when the user explicitly asks for bank questions.
+    if request.source_mode == "bank":
+        db = get_supabase()
+        q = db.table("questions").select(
+            "id,book_id,exam_type,question_type,stem,option_a,option_b,option_c,option_d,option_e,correct_option,explanation,subject,chapter,topic,difficulty,source_page"
+        )
+        if mode == "amc":
+            q = q.in_("exam_type", ["AMC", "BOTH", "amc", "both"])
+        elif mode == "fmge":
+            q = q.in_("exam_type", ["FMGE", "FMGE_NEETPG", "NEETPG", "BOTH", "fmge", "fmge_neetpg", "neetpg", "both"])
+        term = prompt.replace("%", " ").replace("_", " ")[:100]
+        q = q.or_(f"stem.ilike.%{term}%,topic.ilike.%{term}%,chapter.ilike.%{term}%")
+        result = q.limit(20).execute()
+        rows = result.data or []
+        if rows:
+            # deterministic-ish rotation without loading the bank
+            row = rows[int(time.time()) % len(rows)]
+            return {"ok": True, "mode": "bank", "question": row}
+        # Fall through to AI if bank has no match.
+
+    option_count = 5 if mode in {"amc", "mixed"} else 4
+    options_schema = {"type": "object", "properties": {
+        "A": {"type": "string"}, "B": {"type": "string"}, "C": {"type": "string"}, "D": {"type": "string"},
+        "E": {"type": "string"}
+    }, "required": ["A", "B", "C", "D", "E"], "additionalProperties": False}
+    schema = {"type": "object", "properties": {
+        "stem": {"type": "string"},
+        "options": options_schema,
+        "correct_option": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+        "explanation": {"type": "string"},
+        "why_other_options_are_wrong": {"type": "string"},
+        "exam_pearl": {"type": "string"},
+        "subject": {"type": "string"},
+        "topic": {"type": "string"},
+        "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]}
+    }, "required": ["stem", "options", "correct_option", "explanation", "why_other_options_are_wrong", "exam_pearl", "subject", "topic", "difficulty"], "additionalProperties": False}
+
+    library_context = ""
+    sources = []
+    if request.use_library or request.book_id:
+        try:
+            db = get_supabase()
+            chunks = load_medbot_chunks(db, book_id=request.book_id, max_rows=min(MEDBOT_MAX_CHUNKS, 250))
+            relevant = rank_medbot_chunks(chunks, prompt, limit=3)
+            titles = load_book_titles(db, [str(c.get("book_id")) for c in relevant if c.get("book_id")])
+            excerpts = []
+            for c in relevant:
+                body = get_chunk_text(c)[:4500]
+                if body:
+                    title = titles.get(str(c.get("book_id")), "MedQ textbook")
+                    chapter = get_chunk_chapter(c)
+                    excerpts.append(f"SOURCE: {title} | {chapter}\n{body}")
+                    sources.append({"book_title": title, "chapter": chapter})
+            if excerpts:
+                library_context = "\n\n---\n\n".join(excerpts)
+        except Exception as exc:
+            print("AI Study optional library retrieval skipped:", exc)
+
+    system = f"""You are MedQ AI Study, an expert medical MCQ tutor for an MBBS student preparing for AMC CAT MCQ and FMGE/NEET-PG. Generate ONE high-quality clinically meaningful MCQ at a time. Exam mode: {mode.upper()}. Requested difficulty: {difficulty}. The student request is the topic/instruction. Use five options for AMC/mixed and exactly four useful options for FMGE; when FMGE, set E to an empty string. Never use 'all of the above' or 'none of the above'. Exactly one option must be correct. Include enough explanation that after the student answers, MedQ can immediately show correction without another AI call. For AMC emphasize clinical reasoning, investigation, management, safety and next-best-step. For FMGE emphasize high-yield factual + clinical application. Do not invent textbook citations. If reference excerpts are supplied, stay consistent with them."""
+    user = f"Create one MCQ now. Student request: {prompt}\n\n"
+    if library_context:
+        user += "Use these optional MedQ textbook excerpts as grounding:\n" + library_context
+    data = call_gemini_json(system, user, schema, timeout=min(MEDBOT_AI_TIMEOUT, 40))
+    if mode == "fmge":
+        data["options"]["E"] = ""
+        if data.get("correct_option") == "E":
+            data["correct_option"] = "D"
+    data["id"] = f"ai-{uuid.uuid4()}"
+    data["exam_type"] = mode.upper()
+    data["question_type"] = "AI Tutor MCQ"
+    data["source"] = "Gemini AI Study"
+    data["sources"] = sources
+    return {"ok": True, "mode": "ai", "question": data}
+
+
+@app.post("/api/tutor/explain")
+def tutor_explain(request: TutorExplainRequest, authorization: Optional[str] = Header(default=None)):
+    """Guarantee a correction/explanation when an old bank question has no explanation."""
+    require_authenticated_user(authorization)
+    if request.explanation and request.explanation.strip():
+        return {"ok": True, "explanation": request.explanation, "why_wrong": ""}
+    options_text = "\n".join([f"{k}: {v}" for k, v in request.options.items() if v])
+    system = "You are a precise medical exam tutor. Return concise correction text for one MCQ. Do not change the correct option. Explain why the correct answer is correct and, if the student's answer is wrong, why it is wrong."
+    user = f"Question:\n{request.stem}\n\nOptions:\n{options_text}\n\nCorrect option: {request.correct_option}\nStudent option: {request.selected_option or 'not answered'}"
+    schema = {"type": "object", "properties": {"explanation": {"type": "string"}, "why_wrong": {"type": "string"}, "exam_pearl": {"type": "string"}}, "required": ["explanation", "why_wrong", "exam_pearl"], "additionalProperties": False}
+    data = call_gemini_json(system, user, schema, timeout=min(MEDBOT_AI_TIMEOUT, 35))
+    return {"ok": True, **data}
 
 
 @app.post("/api/medbot/stream")
