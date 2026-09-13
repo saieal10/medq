@@ -1231,6 +1231,49 @@ export default function Practice({
         currentAnswer
       )
 
+      // Some older bank questions have no explanation. In Tutor Mode,
+      // never leave the student without correction: generate the missing
+      // explanation once, then store it in this session.
+      if (!currentQuestion.explanation) {
+        try {
+          const explanationResponse = await fetch(`${API_URL}/api/tutor/explain`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({
+              stem: currentQuestion.stem,
+              options: {
+                A: currentQuestion.option_a || '',
+                B: currentQuestion.option_b || '',
+                C: currentQuestion.option_c || '',
+                D: currentQuestion.option_d || '',
+                E: currentQuestion.option_e || ''
+              },
+              selected_option: currentAnswer,
+              correct_option: currentQuestion.correct_option,
+              explanation: ''
+            })
+          })
+          const explanationData = await explanationResponse.json().catch(() => ({}))
+          if (explanationResponse.ok) {
+            setSessionQuestions((previous) => previous.map((item) =>
+              item.id === currentQuestion.id
+                ? {
+                    ...item,
+                    explanation: explanationData.explanation || '',
+                    why_other_options_are_wrong: explanationData.why_wrong || '',
+                    exam_pearl: explanationData.exam_pearl || ''
+                  }
+                : item
+            ))
+          }
+        } catch (explanationError) {
+          console.warn('Tutor explanation could not be generated:', explanationError)
+        }
+      }
+
       setSubmittedQuestions(
         (previous) => ({
           ...previous,
@@ -2721,6 +2764,39 @@ export default function Practice({
 
                               </div>
 
+                            )
+                          }
+
+                          {
+                            currentAnswer !== correctOption &&
+                            currentQuestion.why_other_options_are_wrong &&
+                            (
+                              <div className="professional-explanation" style={{ marginTop: '12px' }}>
+                                <div className="explanation-heading">
+                                  <XCircle size={20} />
+                                  <div>
+                                    <span>CORRECTION</span>
+                                    <strong>Why your selected answer is wrong</strong>
+                                  </div>
+                                </div>
+                                <p>{currentQuestion.why_other_options_are_wrong}</p>
+                              </div>
+                            )
+                          }
+
+                          {
+                            currentQuestion.exam_pearl &&
+                            (
+                              <div className="professional-explanation" style={{ marginTop: '12px' }}>
+                                <div className="explanation-heading">
+                                  <Brain size={20} />
+                                  <div>
+                                    <span>EXAM PEARL</span>
+                                    <strong>Remember this</strong>
+                                  </div>
+                                </div>
+                                <p>{currentQuestion.exam_pearl}</p>
+                              </div>
                             )
                           }
 
